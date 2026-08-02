@@ -13,8 +13,18 @@ require (
 	github.com/pion/logging v0.2.4
 	github.com/pion/transport/v2 v2.2.10
 	github.com/pion/turn/v2 v2.1.6
+	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	lukechampine.com/blake3 v1.3.0
 )
+
+require (
+	github.com/bep/debounce v1.2.1
+	github.com/vishvananda/netlink v1.3.1
+)
+
+// require github.com/KarpelesLab/pktkit v0.1.3-0.20260727150332-7d880a608a22
+require github.com/KarpelesLab/pktkit v0.1.3-0.20260727150332-7d880a608a22
+replace github.com/KarpelesLab/pktkit => ./pktkit
 
 // require github.com/envsh/toxera/fedkey v0.0.0
 
@@ -39,7 +49,6 @@ require (
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bep/debounce v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
@@ -121,6 +130,7 @@ require (
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/whyrusleeping/go-keyspace v0.0.0-20160322163242-5b898ac5add1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.opencensus.io v0.24.0 // indirect
@@ -139,6 +149,7 @@ require (
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/tools v0.24.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	gonum.org/v1/gonum v0.15.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
