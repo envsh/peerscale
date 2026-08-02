@@ -3,36 +3,30 @@
 // It is a fallback for nodes that cannot create a kernel tun device (no
 // root/cap_net_admin): instead of transparently capturing local traffic, the
 // application reaches the virtual LAN explicitly through the returned vc
-// (Dial/Listen/HTTPClient). The wire is identical to iptunnel — whole IP
-// packets framed with msgio over per-peer streams — so a softun node can
-// interoperate with any node serving the same protocol.
+// (Dial/Listen/HTTPClient). softun owns the local stack and all routing
+// decisions (hairpin, ICMP/UDP/TCP replies, peer resolution); packets are
+// forwarded to remote peers through the iptunnel transport, which registers
+// the iptunnel/1.0 protocol and only shuttles whole IP packets.
 package softun
 
 import (
-	"context"
 	"hash/crc64"
 	"log"
 	"net"
 	"net/netip"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/KarpelesLab/pktkit"
 	"github.com/KarpelesLab/pktkit/vclient"
+	"github.com/envsh/libp2px/iptunnel"
 	"github.com/envsh/libp2px/p2put"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-msgio"
 )
 
 const (
-	tunnelProto = "iptunnel/1.0"
-	vlanpfx     = "10.0.0."
-	ipv6pfx     = "fd00::"
-	udpBufSize  = 65535
-	carrierIdle = 5 * time.Minute
-	hubIdle     = 2 * time.Minute
+	vlanpfx = "10.0.0."
+	ipv6pfx = "fd00::"
 )
 
 var (
@@ -43,26 +37,9 @@ var (
 	localPeerID string
 	addrDone    bool
 
-	hubsMu sync.Mutex
-	hubs   = make(map[string]*tunnelHub)
-
 	peerIPs   = make(map[string]string)
 	peerIPsMu sync.Mutex
 )
-
-type tunnelCarrier struct {
-	s    network.Stream
-	w    msgio.WriteCloser
-	dead atomic.Bool
-}
-
-type tunnelHub struct {
-	peerID   string
-	mu       sync.Mutex
-	carriers []*tunnelCarrier
-	opening  bool
-	lastUse  time.Time
-}
 
 func ensureInit() {
 	tunOnce.Do(func() {
@@ -99,11 +76,28 @@ func ensureSelf(pid string) {
 
 // InitSoftTun initializes the user-space tun device. localPeerID is the local
 // node's peer ID used to derive the virtual IP; an empty value defers address
-// assignment until the first stream is seen.
+// assignment until the local peer ID becomes known. It also registers this
+// device as the inbound Sink of the iptunnel transport.
 func InitSoftTun(localPeerID string) error {
 	ensureInit()
 	ensureSelf(localPeerID)
+	iptunnel.SetSink(softunSink{})
 	return nil
+}
+
+// softunSink is the inbound consumer registered with iptunnel: packets coming
+// from peer streams are claimed by the local stack's services (ICMP/UDP/TCP)
+// or injected into the vc device.
+type softunSink struct{}
+
+func (softunSink) Inbound(pkt pktkit.Packet) {
+	localMu.Lock()
+	id := localPeerID
+	localMu.Unlock()
+	ensureSelf(id)
+	if !handleInbound(pkt) {
+		softTun.Send(pkt)
+	}
 }
 
 // Device returns the user-space network stack. Applications use it to reach
@@ -127,7 +121,7 @@ func LocalIP() string {
 }
 
 // StringToHostPart derives the 10.0.0.x host part from a peer ID (crc64),
-// matching the algorithm used by iptunnel and fbvirtun.
+// matching the algorithm used by fbvirtun.
 func StringToHostPart(s string) int {
 	tbl := crc64.MakeTable(crc64.ECMA)
 	h := crc64.Checksum([]byte(s), tbl)
@@ -149,14 +143,6 @@ func localIPv6Of(id string) string {
 		return ""
 	}
 	return ipv6pfx + strconv.FormatInt(int64(StringToHostPart(id)), 16)
-}
-
-// HandleInboundStream attaches an inbound p2p stream to the tunnel device.
-// This is the entry point that the iptunnel protocol handler should call.
-func HandleInboundStream(s network.Stream) {
-	ensureInit()
-	ensureSelf(s.Conn().LocalPeer().String())
-	hubFor(s.Conn().RemotePeer().String()).attach(s)
 }
 
 func routeWrite(pkt pktkit.Packet) error {
@@ -192,8 +178,7 @@ func routeToPeer(pkt pktkit.Packet, dst netip.Addr) error {
 		log.Printf("[softun] drop unroutable dst %s", dst)
 		return nil
 	}
-	hubFor(pid).write(pkt)
-	return nil
+	return iptunnel.WriteToPeer(pid, pkt)
 }
 
 // isLocalAddr reports whether addr is one of this node's virtual addresses.
@@ -243,127 +228,13 @@ func peerIDByVirtAddr(addr netip.Addr) string {
 	return peerIPs[key]
 }
 
-func hubFor(peerID string) *tunnelHub {
-	hubsMu.Lock()
-	defer hubsMu.Unlock()
-	h := hubs[peerID]
-	if h == nil {
-		h = &tunnelHub{peerID: peerID}
-		hubs[peerID] = h
-	}
-	return h
-}
-
-func (h *tunnelHub) attach(s network.Stream) {
-	c := &tunnelCarrier{s: s, w: msgio.NewWriter(s)}
-	h.mu.Lock()
-	h.carriers = append(h.carriers, c)
-	h.lastUse = time.Now()
-	h.mu.Unlock()
-	go h.pump(c)
-}
-
-func (h *tunnelHub) detach(c *tunnelCarrier) {
-	c.dead.Store(true)
-	h.mu.Lock()
-	for i, x := range h.carriers {
-		if x == c {
-			h.carriers = append(h.carriers[:i], h.carriers[i+1:]...)
-			break
-		}
-	}
-	h.mu.Unlock()
-	c.s.Close()
-}
-
-func (h *tunnelHub) pump(c *tunnelCarrier) {
-	defer h.detach(c)
-	r := msgio.NewReaderSize(c.s, udpBufSize)
-	for {
-		c.s.SetReadDeadline(time.Now().Add(carrierIdle))
-		pkt, err := r.ReadMsg()
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
-			}
-			return
-		}
-		if softTun == nil {
-			r.ReleaseMsg(pkt)
-			return
-		}
-		ensureSelf(c.s.Conn().LocalPeer().String())
-		p := pktkit.Packet(pkt)
-		if !handleInbound(p) {
-			softTun.Send(p)
-		}
-		r.ReleaseMsg(pkt)
-	}
-}
-
-func (h *tunnelHub) write(pkt pktkit.Packet) {
-	h.mu.Lock()
-	h.lastUse = time.Now()
-	for _, c := range h.carriers {
-		if c.dead.Load() {
-			continue
-		}
-		if err := c.w.WriteMsg([]byte(pkt)); err != nil {
-			c.dead.Store(true)
-			go c.s.Close()
-			continue
-		}
-		h.mu.Unlock()
-		return
-	}
-	h.maybeOpenLocked()
-	h.mu.Unlock()
-}
-
-func (h *tunnelHub) maybeOpenLocked() {
-	if h.opening {
-		return
-	}
-	h.opening = true
-	go h.openAsync()
-}
-
-func (h *tunnelHub) openAsync() {
-	defer func() {
-		h.mu.Lock()
-		h.opening = false
-		h.mu.Unlock()
-	}()
-	s, err := p2put.OpenStream(context.Background(), h.peerID, tunnelProto)
-	if err != nil {
-		return
-	}
-	h.attach(s)
-}
-
+// startReaper periodically clears stale TCP SYN-pending markers (the only
+// local-stack state that can leak). Hub/hub-carrier reaping lives in iptunnel.
 func startReaper() {
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		for now := range t.C {
 			reapSynPending(now)
-			hubsMu.Lock()
-			for id, h := range hubs {
-				h.mu.Lock()
-				live := false
-				for _, c := range h.carriers {
-					if !c.dead.Load() {
-						live = true
-						break
-					}
-				}
-				idle := now.Sub(h.lastUse) > hubIdle
-				busy := h.opening || live
-				h.mu.Unlock()
-				if !busy && idle {
-					delete(hubs, id)
-				}
-			}
-			hubsMu.Unlock()
 		}
 	}()
 }

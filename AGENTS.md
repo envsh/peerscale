@@ -20,6 +20,7 @@
   - `ListenUDP(port)` net.PacketConn (B1) — `softun/softun_udp.go`
   - synPending TTL reaper cleanup (B4 minimal); UDP deliberately stateless
   - `TestMain` deadlock fix: `ensureSelf` no longer calls `LocalIP()/LocalIPv6()` while holding `localMu`
+- **softun/iptunnel split**: `iptunnel` is now the pure packet-forwarding layer (registers `iptunnel/1.0`, hub/carrier/pump, `Sink`+`SetSink`, `WriteToPeer`); `softun` keeps the vc tun stack + all routing (`routeWrite`/hairpin/peerIDByVirtAddr); port-forwarding code (Dial/DialUDP/NewHttpClient/DriftServer) deleted, `ShouldReject` kept
 
 ## Key Decisions
 
@@ -43,8 +44,11 @@
 - `p2put/relayfile.go`: file transfer protocol implementation (~280 lines)
 - `p2put/filecomp.go`: compression mode + auto-detect (~130 lines)
 - `docs/relayfile-design.md`: RelayFile protocol design doc
-- `softun/softun.go`: routeWrite/hairpin/isLocalAddr/vlanContains4/6, LocalIPv6, peerIP mapping, pump + reaper
+- `softun/softun.go`: routeWrite/hairpin/isLocalAddr/vlanContains4/6, LocalIPv6, peerIP mapping, softunSink (Sink impl), synPending reaper
 - `softun/softun_tcp.go`: synPending sync-trick RST (B2), wrapIPv4/6 + checksums
 - `softun/softun_icmp.go`: ICMPv4/v6 echo reply (B3)
 - `softun/softun_udp.go`: ListenUDP net.PacketConn (B1)
 - `softun/softun_test.go`: unit/integration tests (passes, incl. `-race`)
+- `iptunnel/iptunnel.go`: protocol entry (`handleStream`), `Sink`/`SetSink`/`WriteToPeer`, `ShouldReject`
+- `iptunnel/hub.go`: hubFor/tunnelHub/carrier/attach/detach/pump/write/maybeOpen/openAsync
+- `iptunnel/reaper.go`: idle hub eviction (30s ticker)
