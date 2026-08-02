@@ -12,6 +12,14 @@
   - `p2put/relayfile.go`: TLV frames, bitmap, batch ACK, resume, `SendFile`/`ReceiveFile`/`CancelFileSession`
   - `p2put/filecomp.go`: `CompressAuto/On/Off`, 5-layer detection (ext/magic/entropy/ratio), zstd per-chunk
   - `docs/relayfile-design.md`: protocol design doc
+- **softun virtun parity** (all changes confined to `softun/`, pktkit untouched):
+  - IPv6 routing (`fd00::/64`) + `LocalIPv6()`/`SetIPv6` (A2)
+  - `routeWrite` hairpin loopback for local-addressed packets (A1)
+  - ICMPv4/v6 echo reply (B3) — `softun/softun_icmp.go`
+  - TCP RST refusal via synPending sync trick (B2) — `softun/softun_tcp.go`
+  - `ListenUDP(port)` net.PacketConn (B1) — `softun/softun_udp.go`
+  - synPending TTL reaper cleanup (B4 minimal); UDP deliberately stateless
+  - `TestMain` deadlock fix: `ensureSelf` no longer calls `LocalIP()/LocalIPv6()` while holding `localMu`
 
 ## Key Decisions
 
@@ -35,3 +43,8 @@
 - `p2put/relayfile.go`: file transfer protocol implementation (~280 lines)
 - `p2put/filecomp.go`: compression mode + auto-detect (~130 lines)
 - `docs/relayfile-design.md`: RelayFile protocol design doc
+- `softun/softun.go`: routeWrite/hairpin/isLocalAddr/vlanContains4/6, LocalIPv6, peerIP mapping, pump + reaper
+- `softun/softun_tcp.go`: synPending sync-trick RST (B2), wrapIPv4/6 + checksums
+- `softun/softun_icmp.go`: ICMPv4/v6 echo reply (B3)
+- `softun/softun_udp.go`: ListenUDP net.PacketConn (B1)
+- `softun/softun_test.go`: unit/integration tests (passes, incl. `-race`)
