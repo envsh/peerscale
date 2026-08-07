@@ -11,7 +11,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fedbridge/vtcp"
+
+//	"fedbridge/vtcp"
+
+	"github.com/KarpelesLab/pktkit/vtcp"
 
 	"github.com/envsh/libp2px/p2put"
 	"github.com/envsh/libp2px/pbtunnel"
