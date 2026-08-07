@@ -144,6 +144,7 @@ func handleInboundTCP(pkt pktkit.Packet) bool {
 	if !ok {
 		return false
 	}
+	ensureLoPortMapPort(k.localPort)
 	setSynPending(k)
 	softTun.Send(pkt)
 	if takeSynPending(k) {
@@ -159,6 +160,7 @@ func handleInboundTCP(pkt pktkit.Packet) bool {
 func hairpin(pkt pktkit.Packet) error {
 	if pkt.IPProtocol() == pktkit.ProtocolTCP && isSynOnly(pkt) {
 		if k, ok := synKeyForPacket(pkt); ok {
+			ensureLoPortMapPort(k.localPort)
 			setSynPending(k)
 			softTun.Send(pkt)
 			if takeSynPending(k) {

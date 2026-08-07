@@ -21,6 +21,7 @@
   - synPending TTL reaper cleanup (B4 minimal); UDP deliberately stateless
   - `TestMain` deadlock fix: `ensureSelf` no longer calls `LocalIP()/LocalIPv6()` while holding `localMu`
 - **softun/iptunnel split**: `iptunnel` is now the pure packet-forwarding layer (registers `iptunnel/1.0`, hub/carrier/pump, `Sink`+`SetSink`, `WriteToPeer`); `softun` keeps the vc tun stack + all routing (`routeWrite`/hairpin/peerIDByVirtAddr); port-forwarding code (Dial/DialUDP/NewHttpClient/DriftServer) deleted, `ShouldReject` kept
+- **loportmap** (softun/softun_loportmap.go): optional transparent TCP port map (default off), `EnableLoPortMap()`/`DisableLoPortMap()` — connections to `virtualIP:port` are proxied to the local `127.0.0.1:port` service (independent TCP endpoints, no seq tracking). Lazy per-port vc listener after a loopback probe (preserves connection-refused), TTL-reaped (5 min idle, `reapLoPortMap` via `startLoPortMapGC`), wired into `handleInboundTCP` + `hairpin`. vc stack accepts conns only after the 3-way handshake completes (vclient/tcp.go `<-vc.Established()`), so the bridge connects post-handshake
 
 ## Key Decisions
 
@@ -49,6 +50,8 @@
 - `softun/softun_icmp.go`: ICMPv4/v6 echo reply (B3)
 - `softun/softun_udp.go`: ListenUDP net.PacketConn (B1)
 - `softun/softun_test.go`: unit/integration tests (passes, incl. `-race`)
+- `softun/softun_loportmap.go`: loportmap switch, probe+lazy registration, bridge, TTL GC
+- `softun/softun_loportmap_test.go`: echo round-trip, remote SYN handshake, refused, GC
 - `iptunnel/iptunnel.go`: protocol entry (`handleStream`), `Sink`/`SetSink`/`WriteToPeer`, `ShouldReject`
 - `iptunnel/hub.go`: hubFor/tunnelHub/carrier/attach/detach/pump/write/maybeOpen/openAsync
 - `iptunnel/reaper.go`: idle hub eviction (30s ticker)
