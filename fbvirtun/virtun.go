@@ -60,6 +60,7 @@ sudo setcap cap_net_admin+eip main
 func findAvailableUTUN() string {
 	out, err := exec.Command("/sbin/ifconfig", "-a").CombinedOutput()
 	if err != nil {
+		log.Printf("virtun: ifconfig -a: %v", err)
 		return "utun3"
 	}
 	used := make(map[int]bool)
@@ -216,6 +217,7 @@ func InitVirTun(keyFile string) error {
 func hasExistingIP(ifname string) bool {
 	out, err := exec.Command("/sbin/ifconfig", ifname).CombinedOutput()
 	if err != nil {
+		log.Printf("virtun: ifconfig %s: %v", ifname, err)
 		return false
 	}
 	return strings.Contains(string(out), "inet ")
@@ -260,14 +262,14 @@ func addIPToTun(ip string) error {
 		out, err := exec.Command("ip", "addr", "add", cidr, "dev", ifname).CombinedOutput()
 		if err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
-				log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root")
-				return nil
-			}
-			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
+			log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root")
+			return nil
+		}
+		return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		out, err = exec.Command("ip", "link", "set", ifname, "up").CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("add ip: link up: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("add ip: link up: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	case "darwin":
@@ -286,7 +288,7 @@ func addIPToTun(ip string) error {
 		}
 		out, err := exec.Command("/sbin/ifconfig", args...).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		is6str := "4"
 		if is6 {
@@ -294,7 +296,7 @@ func addIPToTun(ip string) error {
 		}
 		out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, VlanPfx, ip, is6str).CombinedOutput()
 		if err != nil {
-			log.Fatalf("virtun: %s", strings.TrimSpace(string(out)))
+			log.Fatalf("virtun: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	case "windows":
@@ -302,14 +304,14 @@ func addIPToTun(ip string) error {
 			out, err := exec.Command("netsh", "interface", "ipv6", "add", "address",
 				"name=fedlet", "addr="+ip).CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("add ip6: %s", strings.TrimSpace(string(out)))
+				return fmt.Errorf("add ip6: %v: %s", err, strings.TrimSpace(string(out)))
 			}
 			return nil
 		}
 		out, err := exec.Command("netsh", "interface", "ip", "add", "address",
 			"name=fedlet", "addr="+ip, "mask=255.255.255.0").CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("add ip: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
 	return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
@@ -668,6 +670,7 @@ func fixUDPChecksum(pkt []byte, ihl int) {
 func macOSVersion() (major, minor int) {
 	out, err := exec.Command("/usr/bin/sw_vers", "-productVersion").CombinedOutput()
 	if err != nil {
+		log.Printf("virtun: sw_vers: %v", err)
 		return 0, 0
 	}
 	parts := strings.SplitN(strings.TrimSpace(string(out)), ".", 3)
