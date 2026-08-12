@@ -96,7 +96,9 @@ func (softunSink) Inbound(pkt pktkit.Packet) {
 	localMu.Unlock()
 	ensureSelf(id)
 	if !handleInbound(pkt) {
-		softTun.Send(pkt)
+		if err := softTun.Send(pkt); err != nil {
+			log.Printf("[softun] inject inbound %s -> %s: %v", pkt.SrcAddr(), pkt.DstAddr(), err)
+		}
 	}
 }
 
@@ -178,7 +180,11 @@ func routeToPeer(pkt pktkit.Packet, dst netip.Addr) error {
 		log.Printf("[softun] drop unroutable dst %s", dst)
 		return nil
 	}
-	return iptunnel.WriteToPeer(pid, pkt)
+	if err := iptunnel.WriteToPeer(pid, pkt); err != nil {
+		log.Printf("[softun] write to peer %s: %v", pid, err)
+		return err
+	}
+	return nil
 }
 
 // isLocalAddr reports whether addr is one of this node's virtual addresses.
@@ -234,7 +240,9 @@ func startReaper() {
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		for now := range t.C {
-			reapSynPending(now)
+			if n := reapSynPending(now); n > 0 {
+				log.Printf("[softun] reaped %d stale syn-pending entries", n)
+			}
 		}
 	}()
 }

@@ -2,6 +2,7 @@ package softun
 
 import (
 	"encoding/binary"
+	"log"
 	"net/netip"
 	"sync"
 	"time"
@@ -45,14 +46,17 @@ func takeSynPending(k synKey) bool {
 
 // reapSynPending drops stale pending markers whose handshake never completed
 // (e.g. the SYN-ACK was lost in transit). Called periodically by the reaper.
-func reapSynPending(now time.Time) {
+func reapSynPending(now time.Time) int {
 	synMu.Lock()
+	n := 0
 	for k, at := range synPend {
 		if now.Sub(at) > synTTL {
 			delete(synPend, k)
+			n++
 		}
 	}
 	synMu.Unlock()
+	return n
 }
 
 // synKeyForPacket derives the pending key from an inbound SYN: the remote
@@ -149,7 +153,9 @@ func handleInboundTCP(pkt pktkit.Packet) bool {
 	softTun.Send(pkt)
 	if takeSynPending(k) {
 		if rst := buildRST(pkt); rst != nil {
-			routeWrite(pktkit.Packet(rst))
+			if err := routeWrite(pktkit.Packet(rst)); err != nil {
+				log.Printf("[softun] send RST: %v", err)
+			}
 		}
 	}
 	return true
@@ -165,7 +171,9 @@ func hairpin(pkt pktkit.Packet) error {
 			softTun.Send(pkt)
 			if takeSynPending(k) {
 				if rst := buildRST(pkt); rst != nil {
-					softTun.Send(pktkit.Packet(rst))
+					if err := softTun.Send(pktkit.Packet(rst)); err != nil {
+						log.Printf("[softun] hairpin RST: %v", err)
+					}
 				}
 			}
 			return nil
@@ -184,6 +192,7 @@ func buildRST(req pktkit.Packet) []byte {
 	}
 	seg, err := vtcp.ParseSegment(pl)
 	if err != nil {
+		log.Printf("[softun] buildRST parse: %v", err)
 		return nil
 	}
 	reply := &vtcp.Segment{SrcPort: seg.DstPort, DstPort: seg.SrcPort, Flags: vtcp.FlagRST}
@@ -203,6 +212,7 @@ func buildRST(req pktkit.Packet) []byte {
 	case 6:
 		return wrapIPv6(req.IPv6DstAddr(), req.IPv6SrcAddr(), uint8(pktkit.ProtocolTCP), body)
 	}
+	log.Printf("[softun] buildRST: unsupported IP version %d", req.Version())
 	return nil
 }
 

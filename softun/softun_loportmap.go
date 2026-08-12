@@ -2,6 +2,7 @@ package softun
 
 import (
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -79,12 +80,14 @@ func ensureLoPortMapPort(port uint16) bool {
 	// listener.
 	c, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(int(port)), lpmProbeTimeout)
 	if err != nil {
+		log.Printf("[softun] loportmap probe 127.0.0.1:%d: %v", port, err)
 		return false
 	}
 	c.Close()
 	l, err := softTun.Listen("tcp", ":"+strconv.Itoa(int(port)))
 	if err != nil {
 		// Address already in use: the application owns the port.
+		log.Printf("[softun] loportmap listen :%d: %v", port, err)
 		return false
 	}
 	e := &lpmEntry{ln: l, lastTouched: time.Now()}
@@ -115,6 +118,7 @@ func bridgeLoPort(vcConn net.Conn) {
 	}
 	phys, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(addr.Port))
 	if err != nil {
+		log.Printf("[softun] loportmap bridge dial 127.0.0.1:%d: %v", addr.Port, err)
 		vcConn.Close()
 		return
 	}
