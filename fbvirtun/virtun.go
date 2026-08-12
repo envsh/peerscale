@@ -98,7 +98,13 @@ func CleanupDarwinRoutes() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	out, err := exec.Command("./pfroute-darwin.sh", "cleanup").CombinedOutput()
+	p, err := pfrouteScript()
+	if err != nil {
+		log.Printf("route: cleanup: extract pfroute-darwin.sh: %v", err)
+		return
+	}
+	// pfroute-darwin.sh (embedded, extracted to a writable temp dir)
+	out, err := exec.Command(p, "cleanup").CombinedOutput()
 	if err != nil {
 		log.Printf("route: cleanup: %v\n%s", err, string(out))
 	}
@@ -294,7 +300,12 @@ func addIPToTun(ip string) error {
 		if is6 {
 			is6str = "6"
 		}
-		out, err = exec.Command("./pfroute-darwin.sh", "setup", ifname, VlanPfx, ip, is6str).CombinedOutput()
+		p, err := pfrouteScript()
+		if err != nil {
+			log.Fatalf("virtun: extract pfroute-darwin.sh: %v", err)
+		}
+		// pfroute-darwin.sh (embedded, extracted to a writable temp dir)
+		out, err = exec.Command(p, "setup", ifname, VlanPfx, ip, is6str).CombinedOutput()
 		if err != nil {
 			log.Fatalf("virtun: %v: %s", err, strings.TrimSpace(string(out)))
 		}

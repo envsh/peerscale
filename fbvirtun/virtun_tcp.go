@@ -196,7 +196,7 @@ func newTCPBridge(tcp []byte, srcIP, dstIP [4]byte, srcPort, dstPort uint16) *tc
 		net.IP(dstIP[:]).String(), dstPort, dstAddr)
 
 	remote_, err := pbtunnel.Dial(dstAddr)
-	remote := &pbtunnel.P2PConn{remote_}
+	remote := &pbtunnel.P2PConn{Stream: remote_}
 	// remote, err := net.Dial("tcp", dstAddr)
 	if err != nil {
 		log.Println(err)
