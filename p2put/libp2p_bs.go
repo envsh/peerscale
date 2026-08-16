@@ -214,6 +214,9 @@ func mainLibp2p(cfg Config) {
 	bootres.OfflineDetector = NewOfflineDetector(res.Host, res.RelayPool)
 	go bootres.OfflineDetector.Run(context.Background())
 
+	// TODO
+	// rawChan <- Event{Type: "bootready", Value: res.PeerID}
+
 	loadPeerstore(bootres.Host, peerstorePath)
 
 	if currConfig.IsMobile {

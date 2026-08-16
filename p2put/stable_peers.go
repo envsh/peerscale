@@ -95,6 +95,8 @@ func handlePeerConnectednessChanged(e event.EvtPeerConnectednessChanged) {
 			}
 		}
 		stablePeersMu.Unlock()
+		// TODO
+		// rawChan <- Event{Type: "peer-connected", Value: e.Peer.String()}
 
 	case network.NotConnected:
 		stablePeersMu.Lock()

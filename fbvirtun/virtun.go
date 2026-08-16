@@ -346,6 +346,16 @@ func IPv6Available() bool {
 	if err != nil || strings.TrimSpace(string(data)) != "0" {
 		log.Printf("ipv6: check2 /proc/sys/net/ipv6/conf/all/disable_ipv6 fail — err=%v value=%q",
 			err, strings.TrimSpace(string(data)))
+		log.Printf("ipv6: disabled by sysctl, enable with:\n"+
+			"  sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0\n"+
+			"  sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0\n"+
+			"  # persist:\n"+
+			"  sudo tee /etc/sysctl.d/99-ipv6.conf <<'EOF'\n"+
+			"  net.ipv6.conf.all.disable_ipv6 = 0\n"+
+			"  net.ipv6.conf.default.disable_ipv6 = 0\n"+
+			"  EOF\n"+
+			"  sudo sysctl -p /etc/sysctl.d/99-ipv6.conf\n"+
+			"  # verify: cat /proc/sys/net/ipv6/conf/all/disable_ipv6  (expect 0)")
 		return false
 	}
 	return true
