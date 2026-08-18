@@ -6,11 +6,13 @@
 package iptunnel
 
 import (
+	"log"
 	"sync/atomic"
 
 	"github.com/KarpelesLab/pktkit"
 	"github.com/envsh/libp2px/p2put"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // ShouldReject, when set, is consulted on every inbound stream before it is
@@ -35,8 +37,7 @@ func SetSink(s Sink) {
 // outbound transport a tun device needs; peer resolution and all routing
 // decisions stay in the tun device.
 func WriteToPeer(peerID string, pkt pktkit.Packet) error {
-	hubFor(peerID).write(pkt)
-	return nil
+	return hubFor(peerID).write(pkt)
 }
 
 func init() {
@@ -52,5 +53,15 @@ func handleStream(s network.Stream) {
 		s.Reset()
 		return
 	}
-	hubFor(s.Conn().RemotePeer().String()).attach(s)
+	peerID := s.Conn().RemotePeer().String()
+	log.Printf("[iptunnel] handleStream: incoming stream from %s", shortPeerID(peerID))
+	hubFor(peerID).attach(s)
+}
+
+func shortPeerID(raw string) string {
+	id, err := peer.Decode(raw)
+	if err != nil {
+		return raw
+	}
+	return id.ShortString()
 }
