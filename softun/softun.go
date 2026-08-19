@@ -174,6 +174,14 @@ func routeWrite(pkt pktkit.Packet) error {
 	return routeToPeer(pkt, dst)
 }
 
+// shortPID returns a compact peer ID in the form <peer.ID xx*xxxxxx>.
+func shortPID(raw string) string {
+	if len(raw) > 8 {
+		return "<peer.ID " + raw[:2] + "*" + raw[len(raw)-6:] + ">"
+	}
+	return raw
+}
+
 func routeToPeer(pkt pktkit.Packet, dst netip.Addr) error {
 	pid := peerIDByVirtAddr(dst)
 	if pid == "" {
@@ -181,7 +189,7 @@ func routeToPeer(pkt pktkit.Packet, dst netip.Addr) error {
 		return nil
 	}
 	if err := iptunnel.WriteToPeer(pid, pkt); err != nil {
-		log.Printf("[softun] write to peer %s: %v", pid, err)
+		log.Printf("[softun] write to peer %s: %v", shortPID(pid), err)
 		return err
 	}
 	return nil

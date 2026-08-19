@@ -3,7 +3,9 @@ package vtcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -279,7 +281,11 @@ func (c *Conn) flushPackets(pkts [][]byte) {
 	for len(pkts) > 0 {
 		for _, pkt := range pkts {
 			if c.writer != nil {
-				_ = c.writer(pkt)
+				if err := c.writer(pkt); err != nil {
+					c.onTransportError()
+					c.flushing.Store(false)
+					return
+				}
 			}
 		}
 		c.mu.Lock()
@@ -391,6 +397,15 @@ func (c *Conn) Connect(ctx context.Context) error {
 	// Wait for handshake
 	select {
 	case <-c.established:
+		c.mu.Lock()
+		s := c.state
+		c.mu.Unlock()
+		if s != StateEstablished {
+			if c.retries > 0 {
+				return fmt.Errorf("connect failed: retries=%d state=%s", c.retries, s)
+			}
+			return fmt.Errorf("connect failed: rejected state=%s", s)
+		}
 		return nil
 	case <-ctx.Done():
 		c.Abort()
@@ -1100,6 +1115,7 @@ func (c *Conn) retransmit() {
 	if len(data) == 0 {
 		return
 	}
+	log.Printf("[vtcp] retransmit seq=%d len=%d retries=%d", c.sendBuf.UNA(), len(data), c.retries)
 	seg := Segment{
 		SrcPort: c.localPort,
 		DstPort: c.remotePort,
@@ -1183,6 +1199,20 @@ func (c *Conn) queueACK() {
 	}
 	c.addOptions(&seg)
 	c.queueSeg(seg)
+}
+
+// --- Transport error handling ---
+
+// onTransportError is called when the underlying transport (iptunnel
+// carrier) fails to deliver a packet.  It resets the RTO, congestion
+// window, and persist timer so that recovery begins immediately with
+// the next retransmission instead of waiting for backed-off timers.
+func (c *Conn) onTransportError() {
+	if c.closed.Load() || c.state == StateClosed {
+		return
+	}
+	c.cc.OnTimeout()
+	c.stopPersist()
 }
 
 // --- Timer management ---
@@ -1275,7 +1305,9 @@ func (c *Conn) onRTOTimeout() {
 	}
 
 	c.retries++
+	log.Printf("[vtcp] RTO timeout retries=%d/%d state=%s", c.retries, MaxRetries, c.state)
 	if c.retries > MaxRetries {
+		log.Printf("[vtcp] connection dead: retries=%d exceeded MaxRetries=%d state=%s", c.retries, MaxRetries, c.state)
 		c.state = StateClosed
 		c.closed.Store(true)
 		c.stopRTO()

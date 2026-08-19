@@ -87,6 +87,14 @@ func (r *RTOCalculator) InvalidateTiming() {
 	r.timing = false
 }
 
+// ResetRTO resets the retransmission timeout to the minimum value without
+// clearing SRTT/RTTVAR estimates.  Called on transport failure (carrier
+// replacement) so that the next retransmission fires within MinRTO instead
+// of waiting for the exponentially backed-off value.
+func (r *RTOCalculator) ResetRTO() {
+	r.rto = MinRTO
+}
+
 func (r *RTOCalculator) clamp() {
 	if r.rto < MinRTO {
 		r.rto = MinRTO
