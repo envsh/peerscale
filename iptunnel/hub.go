@@ -7,6 +7,7 @@ package iptunnel
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -19,6 +20,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
 )
+
+// ErrNoCarrier is returned by write when no live carrier is available to
+// deliver the packet. Callers (vtcp) should treat this as a transport
+// failure and reset their retransmission timer for faster recovery.
+var ErrNoCarrier = errors.New("iptunnel: no live carrier")
 
 const (
 	tunnelProto = "iptunnel/1.0"
@@ -156,10 +162,12 @@ func (h *tunnelHub) write(pkt pktkit.Packet) error {
 	}
 	h.mu.Unlock()
 
+	var lastErr error
 	for _, c := range live {
 		// log.Printf("[iptunnel] write to %s: trying %s len=%d", h.logPeerID(), c.direction, len(pkt))
 		if err := c.w.WriteMsg([]byte(pkt)); err != nil {
 			log.Printf("[iptunnel] write to %s failed (%s): %v", h.logPeerID(), c.direction, err)
+			lastErr = err
 			c.dead.Store(true)
 			go c.s.Close()
 			continue
@@ -170,7 +178,10 @@ func (h *tunnelHub) write(pkt pktkit.Packet) error {
 	h.mu.Lock()
 	h.maybeOpenLocked("write: all carriers failed")
 	h.mu.Unlock()
-	return nil
+	if lastErr != nil {
+		return lastErr
+	}
+	return ErrNoCarrier
 }
 
 func (h *tunnelHub) maybeOpenLocked(reason string) {
@@ -179,10 +190,10 @@ func (h *tunnelHub) maybeOpenLocked(reason string) {
 	}
 	log.Printf("[iptunnel] %s: opening stream to %s", reason, h.logPeerID())
 	h.opening = true
-	go h.openAsync()
+	go h.openPeerStreamAsync()
 }
 
-func (h *tunnelHub) openAsync() {
+func (h *tunnelHub) openPeerStreamAsync() {
 	defer func() {
 		h.mu.Lock()
 		h.opening = false
@@ -193,6 +204,6 @@ func (h *tunnelHub) openAsync() {
 		log.Printf("[iptunnel] open stream to %s failed: %v", h.logPeerID(), err)
 		return
 	}
-	log.Printf("[iptunnel] stream to %s opened", h.peerID)
+	log.Printf("[iptunnel] stream to %s opened", h.logPeerID())
 	h.attach(s)
 }

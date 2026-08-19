@@ -116,6 +116,7 @@ func bridgeLoPort(vcConn net.Conn) {
 		vcConn.Close()
 		return
 	}
+	log.Printf("[softun] loportmap bridge start port=%d vcConn=%s", addr.Port, vcConn.RemoteAddr())
 	phys, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(addr.Port))
 	if err != nil {
 		log.Printf("[softun] loportmap bridge dial 127.0.0.1:%d: %v", addr.Port, err)
@@ -126,18 +127,21 @@ func bridgeLoPort(vcConn net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		io.Copy(phys, vcConn)
+		n, err := io.Copy(phys, vcConn)
+		log.Printf("[softun] loportmap vcConn→phys done: n=%d err=%v", n, err)
 		if t, ok := phys.(*net.TCPConn); ok {
 			t.CloseWrite()
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(vcConn, phys)
+		n, err := io.Copy(vcConn, phys)
+		log.Printf("[softun] loportmap phys→vcConn done: n=%d err=%v", n, err)
 		vcConn.Close()
 	}()
 	wg.Wait()
 	phys.Close()
+	log.Printf("[softun] loportmap bridge stop port=%d", addr.Port)
 }
 
 // startLoPortMapGC launches the single reaper that closes idle proxy

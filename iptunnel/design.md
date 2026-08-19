@@ -105,7 +105,7 @@ func (h *tunnelHub) attach(s network.Stream) {
 ```
 maybeOpenLocked(reason)
   → opening=true（防止并发）
-  → openAsync()
+  → openPeerStreamAsync()
     → p2put.OpenStream(peerID, tunnelProto)
     → attach(s)  // 新 carrier 替换同方向旧 carrier
     → defer opening=false
