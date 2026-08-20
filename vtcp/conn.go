@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1101,6 +1102,7 @@ func (c *Conn) processACK(ack uint32, opts []Option) {
 	if c.sendBuf.Unacked() > 0 {
 		c.startRTO()
 	} else {
+		log.Printf("[vtcp] processACK: stopRTO unacked=%d ack=%d una=%d", c.sendBuf.Unacked(), ack, c.sendBuf.UNA())
 		c.stopRTO()
 	}
 
@@ -1113,6 +1115,7 @@ func (c *Conn) processACK(ack uint32, opts []Option) {
 func (c *Conn) retransmit() {
 	data := c.sendBuf.RetransmitData(c.mss)
 	if len(data) == 0 {
+		log.Printf("[vtcp] retransmit: no data una=%d nxt=%d unacked=%d", c.sendBuf.UNA(), c.sendBuf.NXT(), c.sendBuf.Unacked())
 		return
 	}
 	log.Printf("[vtcp] retransmit seq=%d len=%d retries=%d", c.sendBuf.UNA(), len(data), c.retries)
@@ -1208,6 +1211,7 @@ func (c *Conn) queueACK() {
 // window, and persist timer so that recovery begins immediately with
 // the next retransmission instead of waiting for backed-off timers.
 func (c *Conn) onTransportError() {
+	log.Printf("[vtcp] onTransportError: state=%s retries=%d", c.state, c.retries)
 	if c.closed.Load() || c.state == StateClosed {
 		return
 	}
@@ -1220,11 +1224,15 @@ func (c *Conn) onTransportError() {
 func (c *Conn) startRTO() {
 	c.stopRTO()
 	rto := c.rto.RTO()
+	log.Printf("[vtcp] startRTO: rto=%v rtoTimer=%v", rto, c.rtoTimer != nil)
 	c.rtoTimer = time.AfterFunc(rto, c.onRTOTimeout)
 }
 
 func (c *Conn) stopRTO() {
 	if c.rtoTimer != nil {
+		var pcs [8]uintptr
+		n := runtime.Callers(2, pcs[:])
+		log.Printf("[vtcp] stopRTO: caller=%x", pcs[:n])
 		c.rtoTimer.Stop()
 		c.rtoTimer = nil
 	}
@@ -1298,6 +1306,7 @@ func (c *Conn) onPersistTimeout() {
 // --- RTO timer ---
 
 func (c *Conn) onRTOTimeout() {
+	log.Printf("[vtcp] onRTOTimeout: entered rto=%v retries=%d", c.rto.RTO(), c.retries)
 	c.mu.Lock()
 	if c.closed.Load() || c.state == StateClosed {
 		c.mu.Unlock()

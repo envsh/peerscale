@@ -134,7 +134,10 @@ func (h *tunnelHub) pump(c *tunnelCarrier) {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
-			log.Printf("[iptunnel] pump: read error from %s: %v", h.logPeerID(), err)
+			h.mu.Lock()
+			total := len(h.carriers)
+			h.mu.Unlock()
+			log.Printf("[iptunnel] pump: read error from %s (%s, total=%d): %v", h.logPeerID(), c.direction, total, err)
 			return
 		}
 		if s := sink.Load(); s != nil {
