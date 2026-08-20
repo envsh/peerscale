@@ -52,6 +52,7 @@ type tunnelHub struct {
 	carriers []*tunnelCarrier
 	opening  bool
 	lastUse  time.Time
+	reattached bool // set true when attach new carrier stream
 }
 
 // hubFor returns the hub that owns the streams to peerID, creating it on
@@ -95,6 +96,7 @@ func (h *tunnelHub) attach(s network.Stream) {
 	live = append(live, c)
 	h.carriers = live
 	h.lastUse = time.Now()
+	h.reattached = true
 	count := len(h.carriers)
 	h.mu.Unlock()
 	log.Printf("[iptunnel] attach: carrier to %s added (%s, total=%d)", h.logPeerID(), c.direction, count)
@@ -168,7 +170,12 @@ func (h *tunnelHub) write(pkt pktkit.Packet) error {
 	var lastErr error
 	for _, c := range live {
 		// log.Printf("[iptunnel] write to %s: trying %s len=%d", h.logPeerID(), c.direction, len(pkt))
-		if err := c.w.WriteMsg([]byte(pkt)); err != nil {
+		err := c.w.WriteMsg([]byte(pkt))
+		if err == nil && h.reattached {
+			log.Printf("[iptunnel] write to %s succ (%s): %v", h.logPeerID(), c.direction, err)
+			h.reattached = false
+		}
+		if err != nil {
 			log.Printf("[iptunnel] write to %s failed (%s): %v", h.logPeerID(), c.direction, err)
 			lastErr = err
 			c.dead.Store(true)
