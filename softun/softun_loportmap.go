@@ -137,7 +137,7 @@ func bridgeLoPort(vcConn net.Conn) {
 		defer wg.Done()
 		n, err := io.Copy(vcConn, phys)
 		log.Printf("[softun] loportmap phys→vcConn done: n=%d err=%v", n, err)
-		vcConn.Close()
+		vcConn.Close() // vtcp.Conn.Close 默认半关闭写端
 	}()
 	wg.Wait()
 	phys.Close()
