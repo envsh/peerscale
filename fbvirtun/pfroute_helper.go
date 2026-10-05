@@ -3,6 +3,7 @@ package fbvirtun
 import (
 	"embed"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -30,12 +31,16 @@ func pfrouteScript() (string, error) {
 			data, err := pfrouteFS.ReadFile(name)
 			if err != nil {
 				pfrouteErr = err
-				os.RemoveAll(dir)
+				if rmErr := os.RemoveAll(dir); rmErr != nil {
+					log.Printf("pfroute: RemoveAll(%s) FAIL: %v", dir, rmErr)
+				}
 				return
 			}
 			if err := os.WriteFile(filepath.Join(dir, name), data, 0o755); err != nil {
 				pfrouteErr = err
-				os.RemoveAll(dir)
+				if rmErr := os.RemoveAll(dir); rmErr != nil {
+					log.Printf("pfroute: RemoveAll(%s) FAIL: %v", dir, rmErr)
+				}
 				return
 			}
 		}
@@ -63,15 +68,21 @@ func writableTempDir() (string, error) {
 	cands = append(cands, ".")
 	for _, c := range cands {
 		if err := os.MkdirAll(c, 0o755); err != nil {
+			log.Printf("pfroute: 候选目录 MkdirAll(%s) FAIL: %v", c, err)
 			continue
 		}
 		probe := filepath.Join(c, ".pfroute-probe")
 		f, err := os.OpenFile(probe, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
+			log.Printf("pfroute: 探测文件 OpenFile(%s) FAIL: %v", probe, err)
 			continue
 		}
-		f.Close()
-		os.Remove(probe)
+		if err := f.Close(); err != nil {
+			log.Printf("pfroute: 探测文件 Close(%s) FAIL: %v", probe, err)
+		}
+		if err := os.Remove(probe); err != nil {
+			log.Printf("pfroute: 探测文件 Remove(%s) FAIL: %v", probe, err)
+		}
 		return c, nil
 	}
 	return "", errors.New("no writable temp directory found")

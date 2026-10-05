@@ -21,7 +21,7 @@ func handleICMP4(pkt []byte, ihl int, bufs [][]byte, n int) bool {
 	pid := peeridByConnIP(net.JoinHostPort(dstStr, "0"))
 	if pid == "" {
 		writeICMPDestUnreach4(pkt, ihl, 1)
-		Tunov.Write(bufs[:1], tunOffset)
+		writeTunBuf("icmp4-dest-unreach", bufs)
 		log.Printf("tun: ICMP Dest Unreach v4 %s → %s len=%d [+]",
 			net.IP(pkt[12:16]).String(), net.IP(pkt[16:20]).String(), n)
 		return true
@@ -47,7 +47,7 @@ func handleICMP4(pkt []byte, ihl int, bufs [][]byte, n int) bool {
 		log.Printf("tun: ICMP v4 Dial error: %v", err)
 		writeICMPDestUnreach4(pkt, ihl, 1)
 	}
-	Tunov.Write(bufs[:1], tunOffset)
+	writeTunBuf("icmp4-reply", bufs)
 	log.Printf("tun: ICMP v4 %s → %s len=%d [+]",
 		net.IP(pkt[12:16]).String(), net.IP(pkt[16:20]).String(), n)
 	return true
@@ -62,7 +62,7 @@ func handleICMP6(pkt []byte, bufs [][]byte, n int) bool {
 	pid := peeridByConnIP(net.JoinHostPort(dstStr, "0"))
 	if pid == "" {
 		writeICMPDestUnreach6(pkt, 3)
-		Tunov.Write(bufs[:1], tunOffset)
+		writeTunBuf("icmp6-dest-unreach", bufs)
 		log.Printf("tun: ICMPv6 Dest Unreach %s → %s len=%d [+]",
 			net.IP(pkt[8:24]).String(), net.IP(pkt[24:40]).String(), n)
 		return true
@@ -87,7 +87,7 @@ func handleICMP6(pkt []byte, bufs [][]byte, n int) bool {
 		log.Printf("tun: ICMPv6 Dial error: %v", err)
 		writeICMPDestUnreach6(pkt, 3)
 	}
-	Tunov.Write(bufs[:1], tunOffset)
+	writeTunBuf("icmp6-reply", bufs)
 	log.Printf("tun: ICMPv6 %s → %s len=%d [+]",
 		net.IP(pkt[8:24]).String(), net.IP(pkt[24:40]).String(), n)
 	return true

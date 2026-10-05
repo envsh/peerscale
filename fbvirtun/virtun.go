@@ -169,7 +169,10 @@ func InitVirTun(keyFile string) error {
 			tunOffset = 12
 		}
 		tunBufSize = tunMTU + tunOffset + 4
-		ifname, _ := Tunov.Name()
+		ifname, nameErr := Tunov.Name()
+		if nameErr != nil {
+			log.Printf("virtun: tundev Name() FAIL: %v (后续日志中的设备名不可信)", nameErr)
+		}
 		log.Println("tundev created", ifname)
 	}
 
@@ -268,7 +271,8 @@ func addIPToTun(ip string) error {
 		out, err := exec.Command("ip", "addr", "add", cidr, "dev", ifname).CombinedOutput()
 		if err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
-			log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root")
+			log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root;"+
+				" 该错误被吞掉,本函数 return nil,上层仍会打印 configured and up,虚拟 IP 实际未加上")
 			return nil
 		}
 		return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
@@ -329,7 +333,13 @@ func addIPToTun(ip string) error {
 }
 
 func SetupSeedVirtIP(ip string) error {
-	return addIPToTun(ip)
+	if err := addIPToTun(ip); err != nil {
+		return err
+	}
+	if !strings.Contains(ip, ":") {
+		verifyTunSetup(curTunName(), ip)
+	}
+	return nil
 }
 
 func IPv6Available() bool {
@@ -495,6 +505,7 @@ func tunReadLoop() {
 		_, err := Tunov.Read(bufs, sizes, tunOffset)
 		n := sizes[0]
 		if err != nil {
+			logTunReadErr(err)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -541,7 +552,7 @@ func tunReadLoop() {
 					fixUDPChecksum(pkt, ihl)
 				}
 			}
-			Tunov.Write(bufs[:1], tunOffset)
+			writeTunBuf("hairpin", bufs)
 			log.Printf("tun: hairpin v%d src=%s dst=%s proto=%d len=%d [+]",
 				version, srcIP, dstIP, proto, n)
 
