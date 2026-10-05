@@ -25,6 +25,12 @@ func readProc(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// dottedKey 把 /proc/sys/net/ipv4/conf/utun3/rp_filter 转成
+// net.ipv4.conf.utun3.rp_filter，供 sysctl -w 提示用。
+func dottedKey(p string) string {
+	return strings.ReplaceAll(strings.TrimPrefix(p, "/proc/sys/"), "/", ".")
+}
+
 func curTunName() string {
 	if Tunov == nil {
 		return ""

@@ -131,6 +131,7 @@ func verifyAndroidSnapshot(ifname string, st *verifyState) {
 	}
 	verifySysctls(ifname, st)
 	verifyIptablesRO(ifname)
+	verifyPolicyRules(st)
 	verifyRouteGet()
 }
 
@@ -183,18 +184,18 @@ func netdRuleSummary(rules []netlink.Rule) string {
 func verifySysctls(ifname string, st *verifyState) {
 	dev := "/proc/sys/net/ipv4/conf/" + ifname
 	log.Printf("virtun: verify INFO V7: default/rp_filter=%s default/accept_local=%s"+
-		" (pfroute-android.sh 在 android 上从未执行,以下均为系统默认值)",
+		" (pfroute-android.sh 只写接口级,这两个 default 仍是系统默认值)",
 		readProc("/proc/sys/net/ipv4/conf/default/rp_filter"),
 		readProc("/proc/sys/net/ipv4/conf/default/accept_local"))
+	log.Printf("virtun: verify INFO V7: all/accept_local=%s (不作断言: 接口级 accept_local"+
+		" 生效不依赖它,程序也不写它)", readProc("/proc/sys/net/ipv4/conf/all/accept_local"))
 	checks := []struct{ name, path, want, why string }{
 		{"all/rp_filter", "/proc/sys/net/ipv4/conf/all/rp_filter", "0",
-			"严格反向路径校验会丢掉从 tun 收到的包"},
+			"内核取 max(conf, all);此处非 0 时接口级写 0 无效,必须先改 all"},
 		{ifname + "/rp_filter", dev + "/rp_filter", "0",
 			"tun 接口需关闭 rp_filter"},
-		{"all/accept_local", "/proc/sys/net/ipv4/conf/all/accept_local", "1",
-			"=0 时内核丢弃 tun 上「源地址是本机地址」的包,表现为能建 tun、能拿 IP,但 peer ping 不通"},
 		{ifname + "/accept_local", dev + "/accept_local", "1",
-			"同上,tun 接口自身必须为 1"},
+			"ORCONF(dev||all),接口级自足;tun 自身必须为 1"},
 	}
 	for _, c := range checks {
 		got := readProc(c.path)
@@ -204,7 +205,71 @@ func verifySysctls(ifname string, st *verifyState) {
 		}
 		st.bad("V7 "+c.name, fmt.Sprintf("got=%q want=%q — %s\n"+
 			"  修复(需 root,本程序只提示不执行): sysctl -w %s=%s",
-			got, c.want, c.why, strings.TrimPrefix(c.path, "/proc/sys/"), c.want))
+			got, c.want, c.why, dottedKey(c.path), c.want))
+	}
+}
+
+// verifyPolicyRules 用与 pfroute-android.sh setup 相同的 `ip rule show` 读回，
+// 独立确认两条 pref 1 规则都在。脚本内已验过一次，这里在 Go 侧再留一条记录。
+func verifyPolicyRules(st *verifyState) {
+	if VlanPfx == "" {
+		st.bad("V10 rule", "VlanPfx 为空,无法确定 mesh 子网")
+		return
+	}
+	bin, err := exec.LookPath("ip")
+	if err != nil {
+		st.bad("V10 rule", fmt.Sprintf("未找到 ip 命令(需 Termux: pkg install iproute2): %v", err))
+		return
+	}
+	out, err := exec.Command(bin, "rule", "show").CombinedOutput()
+	if err != nil {
+		st.bad("V10 rule", fmt.Sprintf("%s rule show FAIL: %v: %s",
+			bin, err, strings.TrimSpace(string(out))))
+		return
+	}
+	subnet := VlanPfx + "0/24"
+	var fromOK, toOK bool
+	var head []string
+	for _, l := range strings.Split(string(out), "\n") {
+		line := strings.TrimSpace(l)
+		if line == "" {
+			continue
+		}
+		if len(head) < 3 {
+			head = append(head, line)
+		}
+		pref, rest, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(pref) != "1" {
+			continue
+		}
+		if !strings.Contains(rest, "main") {
+			continue
+		}
+		if strings.Contains(rest, "from "+subnet) {
+			fromOK = true
+		}
+		if strings.Contains(rest, "to "+subnet) {
+			toOK = true
+		}
+	}
+	log.Printf("virtun: verify INFO V10: %s rule show 前 3 行=[%s]",
+		bin, strings.Join(head, " | "))
+	for _, c := range []struct {
+		name, sel string
+		ok        bool
+	}{
+		{"V10 rule/from", "from", fromOK},
+		{"V10 rule/to", "to", toOK},
+	} {
+		if c.ok {
+			st.ok()
+			continue
+		}
+		st.bad(c.name, fmt.Sprintf("缺 pref 1 %s %s lookup main — Android netd 的无条件规则在"+
+			" pref 18000/19000/20000,不加则包走 wlan0 进不了 tun"+
+			"(能建 tun、能拿 IP,但 ping 和端口都不通)\n"+
+			"  修复(需 root,本程序只提示不执行): ip rule add pref 1 %s %s lookup main",
+			c.sel, subnet, c.sel, subnet))
 	}
 }
 

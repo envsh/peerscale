@@ -4,12 +4,14 @@
 #
 # Usage:
 #   pfroute-darwin.sh setup <ifname> <vlanpfx> <verify_ip> <is6>
-#   pfroute-darwin.sh cleanup
+#   pfroute-darwin.sh cleanup <vlanpfx>
 #
 # setup — Enables IP forwarding, adds v4 subnet route (idempotent),
 #         conditionally adds the v6 host route, then verifies that
 #         "route -n get <verify_ip>" shows interface/gateway <ifname>.
-# cleanup — Deletes the v4 subnet route.
+# cleanup — Deletes the v4 subnet route. <vlanpfx> 必传：原该分支未给 pfx 赋值，
+#           实际执行 `route delete -net "0/24"`，被 2>/dev/null || true 吞掉，
+#           静默无效。|| true 保留：清理本就应幂等，路由不存在不算失败。
 #
 # Exit codes:
 #   0 success
@@ -73,11 +75,16 @@ setup)
 	echo "route: verify OK ${verify_ip} via ${ifname}"
 	;;
 cleanup)
+	pfx=$2
+	if [ -z "$pfx" ]; then
+		echo "Usage: $0 cleanup <vlanpfx>" >&2
+		exit 1
+	fi
 	/sbin/route -q -n delete -net "${pfx}0/24" 2>/dev/null || true
 	echo "route: cleanup done"
 	;;
 *)
-	echo "Usage: $0 setup <ifname> <vlanpfx> <verify_ip> <is6> | cleanup"
+	echo "Usage: $0 setup <ifname> <vlanpfx> <verify_ip> <is6> | cleanup <vlanpfx>"
 	exit 1
 	;;
 esac

@@ -13,14 +13,32 @@ import (
 var pfrouteFS embed.FS
 
 var (
-	pfrouteOnce sync.Once
-	pfroutePath string
-	pfrouteErr  error
+	pfrouteOnce    sync.Once
+	pfrouteDarwin  string
+	pfrouteAndroid string
+	pfrouteErr     error
 )
 
-// pfrouteScript returns the extracted path of pfroute-darwin.sh. pfroute-android.sh
-// is embedded for completeness but never executed. Extraction is lazy and cached.
+// pfrouteScript returns the extracted path of pfroute-darwin.sh.
 func pfrouteScript() (string, error) {
+	p, _, err := pfrouteScripts()
+	return p, err
+}
+
+// pfrouteScriptNamed returns the extracted path of one of the embedded scripts.
+// Extraction is lazy and cached.
+func pfrouteScriptNamed(name string) (string, error) {
+	d, a, err := pfrouteScripts()
+	if err != nil {
+		return "", err
+	}
+	if name == "pfroute-android.sh" {
+		return a, nil
+	}
+	return d, nil
+}
+
+func pfrouteScripts() (darwin, android string, err error) {
 	pfrouteOnce.Do(func() {
 		dir, err := writableTempDir()
 		if err != nil {
@@ -44,9 +62,10 @@ func pfrouteScript() (string, error) {
 				return
 			}
 		}
-		pfroutePath = filepath.Join(dir, "pfroute-darwin.sh")
+		pfrouteDarwin = filepath.Join(dir, "pfroute-darwin.sh")
+		pfrouteAndroid = filepath.Join(dir, "pfroute-android.sh")
 	})
-	return pfroutePath, pfrouteErr
+	return pfrouteDarwin, pfrouteAndroid, pfrouteErr
 }
 
 // writableTempDir returns the first candidate in which a probe file can be

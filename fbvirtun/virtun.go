@@ -104,7 +104,8 @@ func CleanupDarwinRoutes() {
 		return
 	}
 	// pfroute-darwin.sh (embedded, extracted to a writable temp dir)
-	out, err := exec.Command(p, "cleanup").CombinedOutput()
+	// <vlanpfx> 必须传：脚本 cleanup 分支靠 $2 拼子网，缺参会退化成 delete -net "0/24"
+	out, err := exec.Command(p, "cleanup", VlanPfx).CombinedOutput()
 	if err != nil {
 		log.Printf("route: cleanup: %v\n%s", err, string(out))
 	}
@@ -232,6 +233,29 @@ func hasExistingIP(ifname string) bool {
 	return strings.Contains(string(out), "inet ")
 }
 
+// runPfrouteAndroid 调用嵌入的 pfroute-android.sh（提取到可写临时目录）。
+//
+// 用 `sh <script>` 而不是直接 exec 脚本：Android 上没有 /bin/bash（Termux 的
+// bash 在 $PREFIX/bin/bash，shebang 路径对不上），直接 exec 会因找不到解释器
+// 失败。双保险：脚本 shebang 是 #!/bin/sh，且 Go 侧显式用 sh 启动。
+func runPfrouteAndroid(args []string) error {
+	p, err := pfrouteScriptNamed("pfroute-android.sh")
+	if err != nil {
+		return fmt.Errorf("extract pfroute-android.sh: %w", err)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		return fmt.Errorf("no sh in PATH (Termux: pkg install bash): %w", err)
+	}
+	out, err := exec.Command(sh, append([]string{p}, args...)...).CombinedOutput()
+	log.Printf("virtun: pfroute-android.sh %s: %s",
+		strings.Join(args, " "), strings.TrimSpace(string(out)))
+	if err != nil {
+		return fmt.Errorf("pfroute-android.sh %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
 func addIPToTun(ip string) error {
 	is6 := strings.Contains(ip, ":")
 	switch runtime.GOOS {
@@ -264,6 +288,14 @@ func addIPToTun(ip string) error {
 		if err != nil {
 			return fmt.Errorf("add ip: get tun name: %w", err)
 		}
+		log.Printf("virtun: plat %s", detectPlat())
+		if !is6 {
+			// sysctl 必须在 link up 之前：接口一旦上线对端就能发包，
+			// rp_filter/accept_local 还没就位会形成丢包窗口。
+			if err := runPfrouteAndroid([]string{"sysctl", ifname}); err != nil {
+				log.Printf("virtun: %v", err)
+			}
+		}
 		cidr := ip + "/24"
 		if is6 {
 			cidr = ip + "/64"
@@ -271,15 +303,22 @@ func addIPToTun(ip string) error {
 		out, err := exec.Command("ip", "addr", "add", cidr, "dev", ifname).CombinedOutput()
 		if err != nil {
 			if errors.Is(err, exec.ErrNotFound) {
-			log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root;"+
-				" 该错误被吞掉,本函数 return nil,上层仍会打印 configured and up,虚拟 IP 实际未加上")
-			return nil
-		}
-		return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
+				log.Printf("virtun: 'ip' command not found — install iproute2 (Termux: pkg install iproute2) or run with root;" +
+					" 该错误被吞掉,本函数 return nil,上层仍会打印 configured and up,虚拟 IP 实际未加上")
+				return nil
+			}
+			return fmt.Errorf("add ip: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		out, err = exec.Command("ip", "link", "set", ifname, "up").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("add ip: link up: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		if !is6 {
+			// 规则必须在 addr add 之后：lookup main 靠 addr add 装上的
+			// 10.0.0.0/24 dev utun3 才命中，否则规则形同虚设。
+			if err := runPfrouteAndroid([]string{"setup", ifname, VlanPfx, ip, "4"}); err != nil {
+				log.Printf("virtun: %v", err)
+			}
 		}
 		return nil
 	case "darwin":
