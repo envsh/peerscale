@@ -138,6 +138,7 @@ func CleanupDarwinRoutes() {
 //   }
 
 func InitVirTun(keyFile string) error {
+	// !!! android6 need mkdir /dev/net && ln -sv /dev/tun /dev/net/
 	t, err := tun.CreateTUN(findAvailableUTUN(), 1900)
 	if err != nil {
 		log.Println(err, "recheck modprobe tun or root/cap_net_admin")
