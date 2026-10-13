@@ -1,6 +1,6 @@
 module github.com/envsh/libp2px
 
-go 1.21.0
+go 1.25.9
 
 require (
 	github.com/envsh/toxera/fedkey v0.0.0-20260524011924-6488539daf77
