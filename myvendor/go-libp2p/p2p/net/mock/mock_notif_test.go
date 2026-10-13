@@ -2,6 +2,8 @@ package mocknet
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -68,11 +70,8 @@ func TestNotifications(t *testing.T) {
 
 			for _, c := range cons {
 				var found bool
-				for _, c2 := range expect {
-					if c == c2 {
-						found = true
-						break
-					}
+				if slices.Contains(expect, c) {
+					found = true
 				}
 
 				if !found {
@@ -138,9 +137,7 @@ func TestNotifications(t *testing.T) {
 		// Avoid holding this lock while waiting, otherwise we can deadlock.
 		streamStateCopy := map[network.Stream]chan struct{}{}
 		n1.streamState.Lock()
-		for str, ch := range n1.streamState.m {
-			streamStateCopy[str] = ch
-		}
+		maps.Copy(streamStateCopy, n1.streamState.m)
 		n1.streamState.Unlock()
 
 		for str1, ch1 := range streamStateCopy {
@@ -191,15 +188,15 @@ func newNetNotifiee(t *testing.T, buffer int) *netNotifiee {
 	return nn
 }
 
-func (nn *netNotifiee) Listen(n network.Network, a ma.Multiaddr) {
+func (nn *netNotifiee) Listen(_ network.Network, a ma.Multiaddr) {
 	nn.listen <- a
 }
-func (nn *netNotifiee) ListenClose(n network.Network, a ma.Multiaddr) {
+func (nn *netNotifiee) ListenClose(_ network.Network, a ma.Multiaddr) {
 	nn.listenClose <- a
 }
-func (nn *netNotifiee) Connected(n network.Network, v network.Conn) {
+func (nn *netNotifiee) Connected(_ network.Network, v network.Conn) {
 	nn.connected <- v
 }
-func (nn *netNotifiee) Disconnected(n network.Network, v network.Conn) {
+func (nn *netNotifiee) Disconnected(_ network.Network, v network.Conn) {
 	nn.disconnected <- v
 }

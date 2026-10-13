@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"slices"
+
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/metrics"
@@ -17,9 +19,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/transport"
-	"golang.org/x/exp/slices"
 
-	logging "github.com/ipfs/go-log/v2"
+	logging "github.com/libp2p/go-libp2p/gologshim"
 	ma "github.com/multiformats/go-multiaddr"
 	madns "github.com/multiformats/go-multiaddr-dns"
 )
@@ -60,9 +61,9 @@ func WithConnectionGater(gater connmgr.ConnectionGater) Option {
 }
 
 // WithMultiaddrResolver sets a custom multiaddress resolver
-func WithMultiaddrResolver(maResolver *madns.Resolver) Option {
+func WithMultiaddrResolver(resolver network.MultiaddrDNSResolver) Option {
 	return func(s *Swarm) error {
-		s.maResolver = maResolver
+		s.multiaddrResolver = resolver
 		return nil
 	}
 }
@@ -196,7 +197,7 @@ type Swarm struct {
 		m map[int]transport.Transport
 	}
 
-	maResolver *madns.Resolver
+	multiaddrResolver network.MultiaddrDNSResolver
 
 	// stream handlers
 	streamh atomic.Pointer[network.StreamHandler]
@@ -216,11 +217,11 @@ type Swarm struct {
 
 	dialRanker network.DialRanker
 
-	connectednessEventEmitter *connectednessEventEmitter
-	udpBHF                    *BlackHoleSuccessCounter
-	ipv6BHF                   *BlackHoleSuccessCounter
-	bhd                       *blackHoleDetector
-	readOnlyBHD               bool
+	connectionEventsEmitter *connectionEventsEmitter
+	udpBHF                  *BlackHoleSuccessCounter
+	ipv6BHF                 *BlackHoleSuccessCounter
+	bhd                     *blackHoleDetector
+	readOnlyBHD             bool
 }
 
 // NewSwarm constructs a Swarm.
@@ -231,15 +232,15 @@ func NewSwarm(local peer.ID, peers peerstore.Peerstore, eventBus event.Bus, opts
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Swarm{
-		local:            local,
-		peers:            peers,
-		emitter:          emitter,
-		ctx:              ctx,
-		ctxCancel:        cancel,
-		dialTimeout:      defaultDialTimeout,
-		dialTimeoutLocal: defaultDialTimeoutLocal,
-		maResolver:       madns.DefaultResolver,
-		dialRanker:       DefaultDialRanker,
+		local:             local,
+		peers:             peers,
+		emitter:           emitter,
+		ctx:               ctx,
+		ctxCancel:         cancel,
+		dialTimeout:       defaultDialTimeout,
+		dialTimeoutLocal:  defaultDialTimeoutLocal,
+		multiaddrResolver: ResolverFromMaDNS{madns.DefaultResolver},
+		dialRanker:        DefaultDialRanker,
 
 		// A black hole is a binary property. On a network if UDP dials are blocked or there is
 		// no IPv6 connectivity, all dials will fail. So a low success rate of 5 out 100 dials
@@ -253,7 +254,11 @@ func NewSwarm(local peer.ID, peers peerstore.Peerstore, eventBus event.Bus, opts
 	s.transports.m = make(map[int]transport.Transport)
 	s.notifs.m = make(map[network.Notifiee]struct{})
 	s.directConnNotifs.m = make(map[peer.ID][]chan struct{})
-	s.connectednessEventEmitter = newConnectednessEventEmitter(s.Connectedness, emitter)
+	s.connectionEventsEmitter = newConnectionEventsEmitter(
+		s.Connectedness, emitter,
+		func(c *Conn) { s.notifyAll(func(f network.Notifiee) { f.Connected(s, c) }) },
+		func(c *Conn) { s.notifyAll(func(f network.Notifiee) { f.Disconnected(s, c) }) },
+	)
 
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
@@ -309,7 +314,7 @@ func (s *Swarm) close() {
 		go func(l transport.Listener) {
 			defer s.refs.Done()
 			if err := l.Close(); err != nil && err != transport.ErrListenerClosed {
-				log.Errorf("error when shutting down listener: %s", err)
+				log.Error("error when shutting down listener", "err", err)
 			}
 		}(l)
 	}
@@ -318,15 +323,17 @@ func (s *Swarm) close() {
 		for _, c := range cs {
 			go func(c *Conn) {
 				if err := c.Close(); err != nil {
-					log.Errorf("error when shutting down connection: %s", err)
+					log.Error("error when shutting down connection", "err", err)
 				}
 			}(c)
 		}
 	}
 
 	// Wait for everything to finish.
+	// We must wait for all the connection notifications to complete before
+	// closing the events emitter.
 	s.refs.Wait()
-	s.connectednessEventEmitter.Close()
+	s.connectionEventsEmitter.Close()
 	s.emitter.Close()
 
 	// Now close out any transports (if necessary). Do this after closing
@@ -348,8 +355,8 @@ func (s *Swarm) close() {
 			wg.Add(1)
 			go func(c io.Closer) {
 				defer wg.Done()
-				if err := closer.Close(); err != nil {
-					log.Errorf("error when closing down transport %T: %s", c, err)
+				if err := c.Close(); err != nil {
+					log.Error("error when closing down transport", "transport_type", fmt.Sprintf("%T", c), "err", err)
 				}
 			}(closer)
 		}
@@ -384,10 +391,9 @@ func (s *Swarm) addConn(tc transport.CapableConn, dir network.Direction) (*Conn,
 	// If we do this in the Upgrader, we will not be able to do this.
 	if s.gater != nil {
 		if allow, _ := s.gater.InterceptUpgraded(c); !allow {
-			// TODO Send disconnect with reason here
-			err := tc.Close()
+			err := tc.CloseWithError(network.ConnGated)
 			if err != nil {
-				log.Warnf("failed to close connection with peer %s and addr %s; err: %s", p, addr, err)
+				log.Warn("failed to close connection with peer and addr", "peer", p, "addr", addr, "err", err)
 			}
 			return nil, ErrGaterDisallowedConnection
 		}
@@ -416,18 +422,12 @@ func (s *Swarm) addConn(tc transport.CapableConn, dir network.Direction) (*Conn,
 	// * One will be decremented after the close notifications fire in Conn.doClose
 	// * The other will be decremented when Conn.start exits.
 	s.refs.Add(2)
-	// Take the notification lock before releasing the conns lock to block
-	// Disconnect notifications until after the Connect notifications done.
-	// This lock also ensures that swarm.refs.Wait() exits after we have
-	// enqueued the peer connectedness changed notification.
-	// TODO: Fix this fragility by taking a swarm ref for dial worker loop
-	c.notifyLk.Lock()
 	s.conns.Unlock()
-
-	s.connectednessEventEmitter.AddConn(p)
 
 	if !isLimited {
 		// Notify goroutines waiting for a direct connection
+		// do this before connected events, as there's no reason to stall this
+		// notification for the events.
 		//
 		// Go routines interested in waiting for direct connection first acquire this lock
 		// and then acquire s.conns.RLock. Do not acquire this lock before conns.Unlock to
@@ -439,10 +439,11 @@ func (s *Swarm) addConn(tc transport.CapableConn, dir network.Direction) (*Conn,
 		delete(s.directConnNotifs.m, p)
 		s.directConnNotifs.Unlock()
 	}
-	s.notifyAll(func(f network.Notifiee) {
-		f.Connected(s, c)
-	})
-	c.notifyLk.Unlock()
+
+	// AddConn dispatches PeerConnectednessChanged and Notifiee.Connected before
+	// c.start() spawns the AcceptStream loop, so handlers see the conn before
+	// any inbound stream arrives.
+	s.connectionEventsEmitter.AddConn(c)
 
 	c.start()
 	return c, nil
@@ -472,7 +473,7 @@ func (s *Swarm) StreamHandler() network.StreamHandler {
 // Use network.WithAllowLimitedConn to open a stream over a limited(relayed)
 // connection.
 func (s *Swarm) NewStream(ctx context.Context, p peer.ID) (network.Stream, error) {
-	log.Debugf("[%s] opening stream to peer [%s]", s.local, p)
+	log.Debug("opening stream to peer", "source_peer", s.local, "destination_peer", p)
 
 	// Algorithm:
 	// 1. Find the best connection, otherwise, dial.
@@ -510,6 +511,7 @@ func (s *Swarm) NewStream(ctx context.Context, p peer.ID) (network.Stream, error
 			var err error
 			c, err = s.waitForDirectConn(ctx, p)
 			if err != nil {
+				log.Debug("failed to get direct connection to a limited peer", "destination_peer", p, "err", err)
 				return nil, err
 			}
 		}
@@ -624,7 +626,6 @@ func isBetterConn(a, b *Conn) bool {
 
 // bestConnToPeer returns the best connection to peer.
 func (s *Swarm) bestConnToPeer(p peer.ID) *Conn {
-
 	// TODO: Prefer some transports over others.
 	// For now, prefers direct connections over Relayed connections.
 	// For tie-breaking, select the newest non-closed connection with the most streams.
@@ -785,6 +786,8 @@ func (s *Swarm) removeConn(c *Conn) {
 	p := c.RemotePeer()
 
 	s.conns.Lock()
+	defer s.conns.Unlock()
+
 	cs := s.conns.m[p]
 	for i, ci := range cs {
 		if ci == c {
@@ -800,7 +803,6 @@ func (s *Swarm) removeConn(c *Conn) {
 	if len(s.conns.m[p]) == 0 {
 		delete(s.conns.m, p)
 	}
-	s.conns.Unlock()
 }
 
 // String returns a string representation of Network.
@@ -813,36 +815,183 @@ func (s *Swarm) ResourceManager() network.ResourceManager {
 }
 
 // Swarm is a Network.
-var _ network.Network = (*Swarm)(nil)
-var _ transport.TransportNetwork = (*Swarm)(nil)
+var (
+	_ network.Network            = (*Swarm)(nil)
+	_ transport.TransportNetwork = (*Swarm)(nil)
+)
 
 type connWithMetrics struct {
 	transport.CapableConn
 	opened        time.Time
 	dir           network.Direction
 	metricsTracer MetricsTracer
+	once          sync.Once
+	closeErr      error
 }
 
-func wrapWithMetrics(capableConn transport.CapableConn, metricsTracer MetricsTracer, opened time.Time, dir network.Direction) connWithMetrics {
-	c := connWithMetrics{CapableConn: capableConn, opened: opened, dir: dir, metricsTracer: metricsTracer}
+func wrapWithMetrics(capableConn transport.CapableConn, metricsTracer MetricsTracer, opened time.Time, dir network.Direction) *connWithMetrics {
+	c := &connWithMetrics{CapableConn: capableConn, opened: opened, dir: dir, metricsTracer: metricsTracer}
 	c.metricsTracer.OpenedConnection(c.dir, capableConn.RemotePublicKey(), capableConn.ConnState(), capableConn.LocalMultiaddr())
 	return c
 }
 
-func (c connWithMetrics) completedHandshake() {
+func (c *connWithMetrics) As(target any) bool {
+	return c.CapableConn.As(target)
+}
+
+func (c *connWithMetrics) completedHandshake() {
 	c.metricsTracer.CompletedHandshake(time.Since(c.opened), c.ConnState(), c.LocalMultiaddr())
 }
 
-func (c connWithMetrics) Close() error {
-	c.metricsTracer.ClosedConnection(c.dir, time.Since(c.opened), c.ConnState(), c.LocalMultiaddr())
-	return c.CapableConn.Close()
+func (c *connWithMetrics) Close() error {
+	c.once.Do(func() {
+		c.metricsTracer.ClosedConnection(c.dir, time.Since(c.opened), c.ConnState(), c.LocalMultiaddr())
+		c.closeErr = c.CapableConn.Close()
+	})
+	return c.closeErr
 }
 
-func (c connWithMetrics) Stat() network.ConnStats {
+func (c *connWithMetrics) CloseWithError(errCode network.ConnErrorCode) error {
+	c.once.Do(func() {
+		c.metricsTracer.ClosedConnection(c.dir, time.Since(c.opened), c.ConnState(), c.LocalMultiaddr())
+		c.closeErr = c.CapableConn.CloseWithError(errCode)
+	})
+	return c.closeErr
+}
+
+func (c *connWithMetrics) Stat() network.ConnStats {
 	if cs, ok := c.CapableConn.(network.ConnStat); ok {
 		return cs.Stat()
 	}
 	return network.ConnStats{}
 }
 
-var _ network.ConnStat = connWithMetrics{}
+var _ network.ConnStat = &connWithMetrics{}
+
+type ResolverFromMaDNS struct {
+	*madns.Resolver
+}
+
+var _ network.MultiaddrDNSResolver = ResolverFromMaDNS{}
+
+func startsWithDNSADDR(m ma.Multiaddr) bool {
+	if m == nil {
+		return false
+	}
+
+	startsWithDNSADDR := false
+	// Using ForEach to avoid allocating
+	ma.ForEach(m, func(c ma.Component) bool {
+		startsWithDNSADDR = c.Protocol().Code == ma.P_DNSADDR
+		return false
+	})
+	return startsWithDNSADDR
+}
+
+// ResolveDNSAddr implements MultiaddrDNSResolver
+func (r ResolverFromMaDNS) ResolveDNSAddr(ctx context.Context, expectedPeerID peer.ID, maddr ma.Multiaddr, recursionLimit int, outputLimit int) ([]ma.Multiaddr, error) {
+	if outputLimit <= 0 {
+		return nil, nil
+	}
+	if recursionLimit <= 0 {
+		return []ma.Multiaddr{maddr}, nil
+	}
+	var resolved, toResolve []ma.Multiaddr
+	addrs, err := r.Resolve(ctx, maddr)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) > outputLimit {
+		addrs = addrs[:outputLimit]
+	}
+
+	for _, addr := range addrs {
+		if startsWithDNSADDR(addr) {
+			toResolve = append(toResolve, addr)
+		} else {
+			resolved = append(resolved, addr)
+		}
+	}
+
+	for i, addr := range toResolve {
+		// Set the nextOutputLimit to:
+		//   outputLimit
+		//   - len(resolved)          // What we already have resolved
+		//   - (len(toResolve) - i)   // How many addresses we have left to resolve
+		//   + 1                      // The current address we are resolving
+		// This assumes that each DNSADDR address will resolve to at least one multiaddr.
+		// This assumption lets us bound the space we reserve for resolving.
+		nextOutputLimit := outputLimit - len(resolved) - (len(toResolve) - i) + 1
+		resolvedAddrs, err := r.ResolveDNSAddr(ctx, expectedPeerID, addr, recursionLimit-1, nextOutputLimit)
+		if err != nil {
+			log.Warn("failed to resolve dnsaddr", "addr", addr, "err", err)
+			// Dropping this address
+			continue
+		}
+		resolved = append(resolved, resolvedAddrs...)
+	}
+
+	if len(resolved) > outputLimit {
+		resolved = resolved[:outputLimit]
+	}
+
+	// If the address contains a peer id, make sure it matches our expectedPeerID
+	if expectedPeerID != "" {
+		removeMismatchPeerID := func(a ma.Multiaddr) bool {
+			id, err := peer.IDFromP2PAddr(a)
+			if err == peer.ErrInvalidAddr {
+				// This multiaddr didn't contain a peer id, assume it's for this peer.
+				// Handshake will fail later if it's not.
+				return false
+			} else if err != nil {
+				// This multiaddr is invalid, drop it.
+				return true
+			}
+
+			return id != expectedPeerID
+		}
+		resolved = slices.DeleteFunc(resolved, removeMismatchPeerID)
+	}
+
+	return resolved, nil
+}
+
+// ResolveDNSComponent implements MultiaddrDNSResolver
+func (r ResolverFromMaDNS) ResolveDNSComponent(ctx context.Context, maddr ma.Multiaddr, outputLimit int) ([]ma.Multiaddr, error) {
+	addrs, err := r.Resolve(ctx, maddr)
+	if err != nil {
+		return nil, err
+	}
+	if len(addrs) > outputLimit {
+		addrs = addrs[:outputLimit]
+	}
+	return addrs, nil
+}
+
+// AddCertHashes adds certificate hashes to relevant transport addresses, if there
+// are no certhashes already present on the method. It mutates `listenAddrs`.
+// This method is useful for adding certhashes to public addresses discovered
+// via identify, nat mapping, or provided by the user.
+func (s *Swarm) AddCertHashes(listenAddrs []ma.Multiaddr) []ma.Multiaddr {
+	type addCertHasher interface {
+		AddCertHashes(m ma.Multiaddr) (ma.Multiaddr, bool)
+	}
+
+	for i, addr := range listenAddrs {
+		t := s.TransportForListening(addr)
+		if t == nil {
+			continue
+		}
+		tpt, ok := t.(addCertHasher)
+		if !ok {
+			continue
+		}
+		addrWithCerthash, added := tpt.AddCertHashes(addr)
+		if !added {
+			log.Warn("Couldn't add certhashes to multiaddr", "addr", addr)
+			continue
+		}
+		listenAddrs[i] = addrWithCerthash
+	}
+	return listenAddrs
+}

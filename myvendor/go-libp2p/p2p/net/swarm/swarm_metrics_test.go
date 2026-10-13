@@ -79,7 +79,7 @@ func TestMetricsNoAllocNoCover(t *testing.T) {
 	}
 
 	bhfNames := []string{"udp", "ipv6", "tcp", "icmp"}
-	bhfState := []blackHoleState{blackHoleStateAllowed, blackHoleStateBlocked}
+	bhfState := []BlackHoleState{blackHoleStateAllowed, blackHoleStateBlocked}
 
 	tests := map[string]func(){
 		"OpenedConnection": func() {
@@ -92,7 +92,7 @@ func TestMetricsNoAllocNoCover(t *testing.T) {
 			mt.CompletedHandshake(time.Duration(mrand.Intn(100))*time.Second, randItem(connections), randItem(addrs))
 		},
 		"FailedDialing":    func() { mt.FailedDialing(randItem(addrs), randItem(errors), randItem(errors)) },
-		"DialCompleted":    func() { mt.DialCompleted(mrand.Intn(2) == 1, mrand.Intn(10)) },
+		"DialCompleted":    func() { mt.DialCompleted(mrand.Intn(2) == 1, mrand.Intn(10), time.Duration(mrand.Intn(1000_000_000))) },
 		"DialRankingDelay": func() { mt.DialRankingDelay(time.Duration(mrand.Intn(1e10))) },
 		"UpdatedBlackHoleSuccessCounter": func() {
 			mt.UpdatedBlackHoleSuccessCounter(

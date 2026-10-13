@@ -162,7 +162,7 @@ func testAddAddress(ab pstore.AddrBook, clk *mockClock.Mock) func(*testing.T) {
 	}
 }
 
-func testClearWorks(ab pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
+func testClearWorks(ab pstore.AddrBook, _ *mockClock.Mock) func(t *testing.T) {
 	return func(t *testing.T) {
 		ids := GeneratePeerIDs(2)
 		addrs := GenerateAddrs(5)
@@ -183,7 +183,7 @@ func testClearWorks(ab pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) 
 	}
 }
 
-func testSetNegativeTTLClears(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
+func testSetNegativeTTLClears(m pstore.AddrBook, _ *mockClock.Mock) func(t *testing.T) {
 	return func(t *testing.T) {
 		id := GeneratePeerIDs(1)[0]
 		addrs := GenerateAddrs(100)
@@ -217,7 +217,7 @@ func testSetNegativeTTLClears(m pstore.AddrBook, clk *mockClock.Mock) func(t *te
 		// try to remove the same addr multiple times
 		m.SetAddrs(id, addrs[:5], time.Hour)
 		repeated := make([]multiaddr.Multiaddr, 10)
-		for i := 0; i < len(repeated); i++ {
+		for i := range repeated {
 			repeated[i] = addrs[0]
 		}
 		m.SetAddrs(id, repeated, -1)
@@ -229,7 +229,7 @@ func testSetNegativeTTLClears(m pstore.AddrBook, clk *mockClock.Mock) func(t *te
 
 func testUpdateTTLs(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
 	return func(t *testing.T) {
-		t.Run("update ttl of peer with no addrs", func(t *testing.T) {
+		t.Run("update ttl of peer with no addrs", func(_ *testing.T) {
 			id := GeneratePeerIDs(1)[0]
 
 			// Shouldn't panic.
@@ -293,8 +293,8 @@ func testUpdateTTLs(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
 	}
 }
 
-func testNilAddrsDontBreak(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
-	return func(t *testing.T) {
+func testNilAddrsDontBreak(m pstore.AddrBook, _ *mockClock.Mock) func(t *testing.T) {
+	return func(_ *testing.T) {
 		id := GeneratePeerIDs(1)[0]
 
 		m.SetAddr(id, nil, time.Hour)
@@ -347,7 +347,7 @@ func testAddressesExpire(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing
 	}
 }
 
-func testClearWithIterator(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
+func testClearWithIterator(m pstore.AddrBook, _ *mockClock.Mock) func(t *testing.T) {
 	return func(t *testing.T) {
 		ids := GeneratePeerIDs(2)
 		addrs := GenerateAddrs(100)
@@ -374,7 +374,7 @@ func testClearWithIterator(m pstore.AddrBook, clk *mockClock.Mock) func(t *testi
 	}
 }
 
-func testPeersWithAddrs(m pstore.AddrBook, clk *mockClock.Mock) func(t *testing.T) {
+func testPeersWithAddrs(m pstore.AddrBook, _ *mockClock.Mock) func(t *testing.T) {
 	return func(t *testing.T) {
 		// cannot run in parallel as the store is modified.
 		// go runs sequentially in the specified order
@@ -475,8 +475,8 @@ func testCertifiedAddresses(m pstore.AddrBook, clk *mockClock.Mock) func(*testin
 			t.Error("unable to retrieve signed routing record from addrbook")
 		}
 
-		// Adding a new envelope should clear existing certified addresses.
-		// Only the newly-added ones should remain
+		// A newer signed record drops addrs the peer no longer advertises.
+		// Unsigned addrs (added via plain AddAddrs) are retained.
 		certifiedAddrs = certifiedAddrs[:3]
 		rec4 := peer.NewPeerRecord()
 		rec4.PeerID = id
@@ -488,8 +488,9 @@ func testCertifiedAddresses(m pstore.AddrBook, clk *mockClock.Mock) func(*testin
 		if !accepted {
 			t.Error("expected peer record to be accepted")
 		}
-		// AssertAddressesEqual(t, certifiedAddrs, m.Addrs(id))
-		AssertAddressesEqual(t, allAddrs, m.Addrs(id))
+		expectedAfterRec4 := append([]multiaddr.Multiaddr{}, certifiedAddrs...)
+		expectedAfterRec4 = append(expectedAfterRec4, uncertifiedAddrs...)
+		AssertAddressesEqual(t, expectedAfterRec4, m.Addrs(id))
 
 		// update TTL on signed addrs to -1 to remove them.
 		// the signed routing record should be deleted

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"net"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -144,6 +143,24 @@ func (s *stream) Reset() error {
 	return nil
 }
 
+// ResetWithError resets the stream. It ignores the provided error code.
+// TODO: Implement error code support.
+func (s *stream) ResetWithError(_ network.StreamErrorCode) error {
+	// Cancel any pending reads/writes with an error.
+
+	s.write.CloseWithError(network.ErrReset)
+	s.read.CloseWithError(network.ErrReset)
+
+	select {
+	case s.reset <- struct{}{}:
+	default:
+	}
+	<-s.closed
+
+	// No meaningful error case here.
+	return nil
+}
+
 func (s *stream) teardown() {
 	// at this point, no streams are writing.
 	s.conn.removeStream(s)
@@ -156,17 +173,12 @@ func (s *stream) Conn() network.Conn {
 	return s.conn
 }
 
-func (s *stream) SetDeadline(t time.Time) error {
-	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
-}
-
-func (s *stream) SetReadDeadline(t time.Time) error {
-	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
-}
-
-func (s *stream) SetWriteDeadline(t time.Time) error {
-	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
-}
+// SetDeadline is a noop for mocknet streams since the underlying pipe
+// transport does not support deadlines. Callers should not treat the
+// absence of deadline support as an error.
+func (s *stream) SetDeadline(_ time.Time) error      { return nil }
+func (s *stream) SetReadDeadline(_ time.Time) error  { return nil }
+func (s *stream) SetWriteDeadline(_ time.Time) error { return nil }
 
 func (s *stream) Read(b []byte) (int, error) {
 	return s.read.Read(b)

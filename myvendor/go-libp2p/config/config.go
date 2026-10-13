@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/connmgr"
@@ -19,28 +21,35 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/core/sec"
-	"github.com/libp2p/go-libp2p/core/sec/insecure"
 	"github.com/libp2p/go-libp2p/core/transport"
+	logging "github.com/libp2p/go-libp2p/gologshim"
 	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	bhost "github.com/libp2p/go-libp2p/p2p/host/basic"
 	blankhost "github.com/libp2p/go-libp2p/p2p/host/blank"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
+	"github.com/libp2p/go-libp2p/p2p/host/observedaddrs"
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	routed "github.com/libp2p/go-libp2p/p2p/host/routed"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	tptu "github.com/libp2p/go-libp2p/p2p/net/upgrader"
+	"github.com/libp2p/go-libp2p/p2p/protocol/autonatv2"
 	circuitv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
+	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+	"github.com/libp2p/go-libp2p/p2p/security/insecure"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcpreuse"
 	"github.com/prometheus/client_golang/prometheus"
 
 	ma "github.com/multiformats/go-multiaddr"
-	madns "github.com/multiformats/go-multiaddr-dns"
+	manet "github.com/multiformats/go-multiaddr/net"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 )
+
+var log = logging.Logger("p2p-config")
 
 // AddrsFactory is a function that takes a set of multiaddrs we're listening on and
 // returns the set of multiaddrs we should advertise to the network.
@@ -62,7 +71,7 @@ type AutoNATConfig struct {
 
 type Security struct {
 	ID          protocol.ID
-	Constructor interface{}
+	Constructor any
 }
 
 // Config describes a set of settings for a libp2p node
@@ -108,9 +117,11 @@ type Config struct {
 	Peerstore  peerstore.Peerstore
 	Reporter   metrics.Reporter
 
-	MultiaddrResolver *madns.Resolver
+	MultiaddrResolver network.MultiaddrDNSResolver
 
 	DisablePing bool
+
+	DisableNonPublicAddrPublishing bool
 
 	Routing RoutingC
 
@@ -136,6 +147,10 @@ type Config struct {
 	CustomUDPBlackHoleSuccessCounter  bool
 	IPv6BlackHoleSuccessCounter       *swarm.BlackHoleSuccessCounter
 	CustomIPv6BlackHoleSuccessCounter bool
+
+	UserFxOptions []fx.Option
+
+	ShareTCPListener bool
 }
 
 func (cfg *Config) makeSwarm(eventBus event.Bus, enableMetrics bool) (*swarm.Swarm, error) {
@@ -145,9 +160,7 @@ func (cfg *Config) makeSwarm(eventBus event.Bus, enableMetrics bool) (*swarm.Swa
 
 	// Check this early. Prevents us from even *starting* without verifying this.
 	if pnet.ForcePrivateNetwork && len(cfg.PSK) == 0 {
-		log.Error("tried to create a libp2p node with no Private" +
-			" Network Protector but usage of Private Networks" +
-			" is forced by the environment")
+		log.Error("tried to create a libp2p node with no Private Network Protector but usage of Private Networks is forced by the environment")
 		// Note: This is *also* checked the upgrader itself, so it'll be
 		// enforced even *if* you don't use the libp2p constructor.
 		return nil, pnet.ErrNotInPrivateNetwork
@@ -274,13 +287,24 @@ func (cfg *Config) makeAutoNATV2Host() (host.Host, error) {
 
 func (cfg *Config) addTransports() ([]fx.Option, error) {
 	fxopts := []fx.Option{
-		fx.WithLogger(func() fxevent.Logger { return getFXLogger() }),
+		fx.WithLogger(func() fxevent.Logger {
+			l := &fxevent.SlogLogger{
+				Logger: log.With("system", "fx"),
+			}
+			l.UseLogLevel(slog.LevelDebug)
+			return l
+		}),
 		fx.Provide(fx.Annotate(tptu.New, fx.ParamTags(`name:"security"`))),
 		fx.Supply(cfg.Muxers),
 		fx.Provide(func() connmgr.ConnectionGater { return cfg.ConnectionGater }),
 		fx.Provide(func() pnet.PSK { return cfg.PSK }),
 		fx.Provide(func() network.ResourceManager { return cfg.ResourceManager }),
-		fx.Provide(func() *madns.Resolver { return cfg.MultiaddrResolver }),
+		fx.Provide(func(upgrader transport.Upgrader) *tcpreuse.ConnMgr {
+			if !cfg.ShareTCPListener {
+				return nil
+			}
+			return tcpreuse.NewConnMgr(tcpreuse.EnvReuseportVal, upgrader)
+		}),
 	}
 	fxopts = append(fxopts, cfg.Transports...)
 	if cfg.Insecure {
@@ -352,63 +376,69 @@ func (cfg *Config) addTransports() ([]fx.Option, error) {
 	return fxopts, nil
 }
 
-func (cfg *Config) newBasicHost(swrm *swarm.Swarm, eventBus event.Bus) (*bhost.BasicHost, error) {
-	var autonatv2Dialer host.Host
-	if cfg.EnableAutoNATv2 {
-		ah, err := cfg.makeAutoNATV2Host()
-		if err != nil {
-			return nil, err
-		}
-		autonatv2Dialer = ah
-	}
+func (cfg *Config) newBasicHost(swrm *swarm.Swarm, eventBus event.Bus, an *autonatv2.AutoNAT, o bhost.ObservedAddrsManager) (*bhost.BasicHost, error) {
 	h, err := bhost.NewHost(swrm, &bhost.HostOpts{
-		EventBus:                        eventBus,
-		ConnManager:                     cfg.ConnManager,
-		AddrsFactory:                    cfg.AddrsFactory,
-		NATManager:                      cfg.NATManager,
-		EnablePing:                      !cfg.DisablePing,
-		UserAgent:                       cfg.UserAgent,
-		ProtocolVersion:                 cfg.ProtocolVersion,
-		EnableHolePunching:              cfg.EnableHolePunching,
-		HolePunchingOptions:             cfg.HolePunchingOptions,
-		EnableRelayService:              cfg.EnableRelayService,
-		RelayServiceOpts:                cfg.RelayServiceOpts,
-		EnableMetrics:                   !cfg.DisableMetrics,
-		PrometheusRegisterer:            cfg.PrometheusRegisterer,
-		DisableIdentifyAddressDiscovery: cfg.DisableIdentifyAddressDiscovery,
-		EnableAutoNATv2:                 cfg.EnableAutoNATv2,
-		AutoNATv2Dialer:                 autonatv2Dialer,
+		EventBus:                       eventBus,
+		ConnManager:                    cfg.ConnManager,
+		AddrsFactory:                   cfg.AddrsFactory,
+		NATManager:                     cfg.NATManager,
+		EnablePing:                     !cfg.DisablePing,
+		UserAgent:                      cfg.UserAgent,
+		ProtocolVersion:                cfg.ProtocolVersion,
+		EnableHolePunching:             cfg.EnableHolePunching,
+		HolePunchingOptions:            cfg.HolePunchingOptions,
+		EnableRelayService:             cfg.EnableRelayService,
+		RelayServiceOpts:               cfg.RelayServiceOpts,
+		EnableMetrics:                  !cfg.DisableMetrics,
+		PrometheusRegisterer:           cfg.PrometheusRegisterer,
+		DisableNonPublicAddrPublishing: cfg.DisableNonPublicAddrPublishing,
+		AutoNATv2:                      an,
+		ObservedAddrsManager:           o,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Relay {
-		// If we've enabled the relay, we should filter out relay
-		// addresses by default.
-		//
-		// TODO: We shouldn't be doing this here.
-		originalAddrFactory := h.AddrsFactory
-		h.AddrsFactory = func(addrs []ma.Multiaddr) []ma.Multiaddr {
-			return originalAddrFactory(autorelay.Filter(addrs))
-		}
-	}
 	return h, nil
 }
 
-// NewNode constructs a new libp2p Host from the Config.
-//
-// This function consumes the config. Do not reuse it (really!).
-func (cfg *Config) NewNode() (host.Host, error) {
+func (cfg *Config) validate() error {
 	if cfg.EnableAutoRelay && !cfg.Relay {
-		return nil, fmt.Errorf("cannot enable autorelay; relay is not enabled")
+		return fmt.Errorf("cannot enable autorelay; relay is not enabled")
 	}
 	// If possible check that the resource manager conn limit is higher than the
 	// limit set in the conn manager.
 	if l, ok := cfg.ResourceManager.(connmgr.GetConnLimiter); ok {
 		err := cfg.ConnManager.CheckLimit(l)
 		if err != nil {
-			log.Warn(fmt.Sprintf("rcmgr limit conflicts with connmgr limit: %v", err))
+			log.Warn("rcmgr limit conflicts with connmgr limit", "err", err)
 		}
+	}
+
+	if len(cfg.PSK) > 0 && cfg.ShareTCPListener {
+		return errors.New("cannot use shared TCP listener with PSK")
+	}
+
+	return nil
+}
+
+// NewNode constructs a new libp2p Host from the Config.
+//
+// This function consumes the config. Do not reuse it (really!).
+func (cfg *Config) NewNode() (host.Host, error) {
+
+	validateErr := cfg.validate()
+	if validateErr != nil {
+		if cfg.ResourceManager != nil {
+			cfg.ResourceManager.Close()
+		}
+		if cfg.ConnManager != nil {
+			cfg.ConnManager.Close()
+		}
+		if cfg.Peerstore != nil {
+			cfg.Peerstore.Close()
+		}
+
+		return nil, validateErr
 	}
 
 	if !cfg.DisableMetrics {
@@ -439,7 +469,47 @@ func (cfg *Config) NewNode() (host.Host, error) {
 			})
 			return sw, nil
 		}),
+		fx.Provide(func(eventBus event.Bus, s *swarm.Swarm, lifecycle fx.Lifecycle) (bhost.ObservedAddrsManager, error) {
+			if cfg.DisableIdentifyAddressDiscovery {
+				return nil, nil
+			}
+			o, err := observedaddrs.NewManager(eventBus, s)
+			if err != nil {
+				return nil, err
+			}
+			lifecycle.Append(fx.Hook{
+				OnStart: func(context.Context) error {
+					o.Start(s)
+					return nil
+				},
+				OnStop: func(context.Context) error {
+					return o.Close()
+				},
+			})
+			return o, nil
+		}),
+		fx.Provide(func() (*autonatv2.AutoNAT, error) {
+			if !cfg.EnableAutoNATv2 {
+				return nil, nil
+			}
+			ah, err := cfg.makeAutoNATV2Host()
+			if err != nil {
+				return nil, err
+			}
+			var mt autonatv2.MetricsTracer
+			if !cfg.DisableMetrics {
+				mt = autonatv2.NewMetricsTracer(cfg.PrometheusRegisterer)
+			}
+			autoNATv2, err := autonatv2.New(ah, autonatv2.WithMetricsTracer(mt))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create autonatv2: %w", err)
+			}
+			return autoNATv2, nil
+		}),
 		fx.Provide(cfg.newBasicHost),
+		fx.Provide(func(bh *bhost.BasicHost) identify.IDService {
+			return bh.IDService()
+		}),
 		fx.Provide(func(bh *bhost.BasicHost) host.Host {
 			return bh
 		}),
@@ -451,7 +521,7 @@ func (cfg *Config) NewNode() (host.Host, error) {
 	}
 	fxopts = append(fxopts, transportOpts...)
 
-	// Configure routing and autorelay
+	// Configure routing
 	if cfg.Routing != nil {
 		fxopts = append(fxopts,
 			fx.Provide(cfg.Routing),
@@ -461,17 +531,8 @@ func (cfg *Config) NewNode() (host.Host, error) {
 		)
 	}
 
-	// originalAddrFactory is the AddrFactory before it's modified by autorelay
-	// we need this for checking reachability via autonat
-	originalAddrFactory := func(addrs []ma.Multiaddr) []ma.Multiaddr {
-		return addrs
-	}
-
 	// enable autorelay
 	fxopts = append(fxopts,
-		fx.Invoke(func(h *bhost.BasicHost) {
-			originalAddrFactory = h.AddrsFactory
-		}),
 		fx.Invoke(func(h *bhost.BasicHost, lifecycle fx.Lifecycle) error {
 			if cfg.EnableAutoRelay {
 				if !cfg.DisableMetrics {
@@ -503,12 +564,14 @@ func (cfg *Config) NewNode() (host.Host, error) {
 		fxopts = append(fxopts, fx.Invoke(func(bho *routed.RoutedHost) { rh = bho }))
 	}
 
+	fxopts = append(fxopts, cfg.UserFxOptions...)
+
 	app := fx.New(fxopts...)
 	if err := app.Start(context.Background()); err != nil {
 		return nil, err
 	}
 
-	if err := cfg.addAutoNAT(bh, originalAddrFactory); err != nil {
+	if err := cfg.addAutoNAT(bh); err != nil {
 		app.Stop(context.Background())
 		if cfg.Routing != nil {
 			rh.Close()
@@ -519,16 +582,31 @@ func (cfg *Config) NewNode() (host.Host, error) {
 	}
 
 	if cfg.Routing != nil {
-		return &closableRoutedHost{App: app, RoutedHost: rh}, nil
+		return &closableRoutedHost{
+			closableBasicHost: closableBasicHost{
+				App:       app,
+				BasicHost: bh,
+			},
+			RoutedHost: rh,
+		}, nil
 	}
 	return &closableBasicHost{App: app, BasicHost: bh}, nil
 }
 
-func (cfg *Config) addAutoNAT(h *bhost.BasicHost, addrF AddrsFactory) error {
+func (cfg *Config) addAutoNAT(h *bhost.BasicHost) error {
+	// Only use public addresses for autonat
+	addrFunc := func() []ma.Multiaddr {
+		return slices.DeleteFunc(h.AllAddrs(), func(a ma.Multiaddr) bool { return !manet.IsPublicAddr(a) })
+	}
+	if cfg.AddrsFactory != nil {
+		addrFunc = func() []ma.Multiaddr {
+			return slices.DeleteFunc(
+				slices.Clone(cfg.AddrsFactory(h.AllAddrs())),
+				func(a ma.Multiaddr) bool { return !manet.IsPublicAddr(a) })
+		}
+	}
 	autonatOpts := []autonat.Option{
-		autonat.UsingAddresses(func() []ma.Multiaddr {
-			return addrF(h.AllAddrs())
-		}),
+		autonat.UsingAddresses(addrFunc),
 	}
 	if !cfg.DisableMetrics {
 		autonatOpts = append(autonatOpts, autonat.WithMetricsTracer(
@@ -611,7 +689,7 @@ func (cfg *Config) addAutoNAT(h *bhost.BasicHost, addrF AddrsFactory) error {
 
 	autonat, err := autonat.New(h, autonatOpts...)
 	if err != nil {
-		return fmt.Errorf("cannot enable autorelay; autonat failed to start: %v", err)
+		return fmt.Errorf("autonat init failed: %w", err)
 	}
 	h.SetAutoNat(autonat)
 	return nil

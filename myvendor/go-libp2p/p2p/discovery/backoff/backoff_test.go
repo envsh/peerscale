@@ -21,9 +21,7 @@ func TestFixedBackoff(t *testing.T) {
 	delay := startDelay
 
 	bkf := NewFixedBackoff(delay)
-	delay *= 2
 	b1 := bkf()
-	delay *= 2
 	b2 := bkf()
 
 	if b1.Delay() != startDelay || b2.Delay() != startDelay {
@@ -91,7 +89,7 @@ func minMaxJitterTest(jitter Jitter, t *testing.T) {
 
 func TestNoJitter(t *testing.T) {
 	minMaxJitterTest(NoJitter, t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		expected := time.Second * time.Duration(i)
 		if calculated := NoJitter(expected, time.Duration(0), time.Second*100, nil); calculated != expected {
 			t.Fatalf("expected %v, got %v", expected, calculated)
@@ -108,7 +106,7 @@ func TestFullJitter(t *testing.T) {
 
 	histogram := make([]int, numBuckets)
 
-	for i := 0; i < (numBuckets-1)*multiplier; i++ {
+	for range (numBuckets - 1) * multiplier {
 		started := time.Nanosecond * 50
 		calculated := FullJitter(started, 0, 100, rng)
 		histogram[calculated]++
@@ -129,17 +127,17 @@ func TestManyBackoffFactory(t *testing.T) {
 	rngSource := rand.NewSource(0)
 	concurrent := 10
 
-	t.Run("Exponential", func(t *testing.T) {
+	t.Run("Exponential", func(_ *testing.T) {
 		testManyBackoffFactoryHelper(concurrent,
 			NewExponentialBackoff(time.Millisecond*650, time.Second*7, FullJitter, time.Second, 1.5, -time.Millisecond*400, rngSource),
 		)
 	})
-	t.Run("Polynomial", func(t *testing.T) {
+	t.Run("Polynomial", func(_ *testing.T) {
 		testManyBackoffFactoryHelper(concurrent,
 			NewPolynomialBackoff(time.Second, time.Second*33, NoJitter, time.Second, []float64{0.5, 2, 3}, rngSource),
 		)
 	})
-	t.Run("Fixed", func(t *testing.T) {
+	t.Run("Fixed", func(_ *testing.T) {
 		testManyBackoffFactoryHelper(concurrent,
 			NewFixedBackoff(time.Second),
 		)
@@ -150,7 +148,7 @@ func testManyBackoffFactoryHelper(concurrent int, bkf BackoffFactory) {
 	backoffCh := make(chan BackoffStrategy, concurrent)
 
 	errGrp := errgroup.Group{}
-	for i := 0; i < concurrent; i++ {
+	for range concurrent {
 		errGrp.Go(func() (err error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -176,8 +174,8 @@ func testManyBackoffFactoryHelper(concurrent int, bkf BackoffFactory) {
 				}
 			}()
 
-			for i := 0; i < 5; i++ {
-				for j := 0; j < 10; j++ {
+			for range 5 {
+				for range 10 {
 					backoff.Delay()
 				}
 				backoff.Reset()

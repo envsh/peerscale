@@ -89,3 +89,19 @@ go mod tidy
 - ASN 限额保持失效（已决策接受）。
 - 工具链需 Go 1.25.9（联网 `GOTOOLCHAIN=auto` 或已装）。
 - 纯替换式重建 fork，原 git 历史不保留（无功能意义）。
+
+## 执行记录（2026-10-13）
+### 结果总览
+- **fork v0.49.0 精简重建完成**，`go build`/`go vet` 通过；
+- 父工程迁移完成，p2put/softun（含 `-race`）测试通过；
+- 主程序二进制 **26.8MB**（原 31.8MB，**-15.6%**），优于预期。
+
+### 与计划的实际差异
+1. **`go mod tidy` 的 dep-tests 报错** → 用 `go mod tidy -e` + `go build -mod=mod` 补全 go.sum（kad-dht/pubsub 的测试引用了被删的 `swarm/testing`、`x/simlibp2p`，义务上无需补齐）。
+2. **删了 39 个 fork 内 `_test.go`**：凡 import 已删包或引用被删测试助手的测试文件（含 v0.49 的 `swarm/testing` 本身——它硬依赖 quic 全系，无法像 v0.36 那样保留）。
+3. **API 断点仅 2 处**（如预期走查清单范围）：
+   - kad-dht `dht.New` 去掉 ctx 参数 → `p2put/libp2p_bs_dht.go:50,361` 删掉第一个 ctx 实参。
+   - swarm `DialBackoff.BackoffRemaining` 被删 → 在 fork `swarm_dial.go` 重建该方法（语义同 v0.36）。
+4. `config/config.go` 额外删了 `"net"` import（webrtc 块移除后不再使用）。
+5. iptunnel `hub.go:230` 的 vet 告警为既有问题，与本升级无关。
+6. **裸 `go mod tidy` 修复**：新增两处占位包 `p2p/net/swarm/testing`（swarm）与 `x/simlibp2p`（simlibp2p），各一行 `package` 声明，使 kad-dht/pubsub 测试的 import 路径可解析；fork 构建/vet 不受影响，父目录 `go mod tidy` 纯通过（tidy 顺带把间接依赖 MVS 抬到 v0.49 图最优版本）。

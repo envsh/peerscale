@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -82,10 +83,8 @@ func dialOne(t *testing.T, tr *Transport, listener manet.Listener, expected ...i
 	if len(expected) == 0 {
 		return port
 	}
-	for _, p := range expected {
-		if p == port {
-			return port
-		}
+	if slices.Contains(expected, port) {
+		return port
 	}
 	t.Errorf("dialed %s from %v. expected to dial from port %v", listener.Multiaddr(), c.LocalAddr(), expected)
 	return 0
@@ -207,7 +206,7 @@ func TestGlobalToGlobal(t *testing.T) {
 	testUseFirst(t, globalV6, globalV6, loopbackV6)
 }
 
-func testUseFirst(t *testing.T, listen, use, never ma.Multiaddr) {
+func testUseFirst(t *testing.T, _, _, _ ma.Multiaddr) {
 	var trA Transport
 	var trB Transport
 	listenerA, err := trA.Listen(globalV4)
@@ -271,7 +270,7 @@ func TestDuplicateGlobal(t *testing.T) {
 	port := dialOne(t, &trB, listenerA)
 
 	// Check consistency
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		dialOne(t, &trB, listenerA, port)
 	}
 }

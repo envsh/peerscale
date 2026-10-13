@@ -13,10 +13,10 @@ import (
 	mocknetwork "github.com/libp2p/go-libp2p/core/network/mocks"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/sec"
-	"github.com/libp2p/go-libp2p/core/sec/insecure"
 	"github.com/libp2p/go-libp2p/core/transport"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/net/upgrader"
+	"github.com/libp2p/go-libp2p/p2p/security/insecure"
 
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -99,7 +99,7 @@ type errorMuxer struct{}
 
 var _ network.Multiplexer = &errorMuxer{}
 
-func (m *errorMuxer) NewConn(c net.Conn, isServer bool, scope network.PeerScope) (network.MuxedConn, error) {
+func (m *errorMuxer) NewConn(_ net.Conn, _ bool, _ network.PeerScope) (network.MuxedConn, error) {
 	return nil, errors.New("mux error")
 }
 

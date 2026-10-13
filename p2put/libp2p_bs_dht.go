@@ -47,7 +47,7 @@ func (bsres *BootNode) bootDHT(ctx context.Context) (any, error) {
 
 	bootCtx, cancel := context.WithTimeout(ctx, 32*time.Second)
 	defer cancel()
-	kadDHT, err := dht.New(bootCtx, h,
+	kadDHT, err := dht.New(h,
 		dht.Mode(dht.ModeClient),
 		dht.BootstrapPeers(bootstrapInfos...),
 		// dht.DisableAutoRefresh(),
@@ -358,7 +358,7 @@ func dhtPutKV(ctx context.Context, key string, value []byte) error {
 
 	// not support put custom key, opendht does
 	// {"error":"create temp dht: protocol prefix /ipfs must have exactly two namespaced validators - /pk and /ipns"}
-	tempDHT, err := dht.New(ctx, bootres.Host, dht.Mode(dht.ModeClient))
+	tempDHT, err := dht.New(bootres.Host, dht.Mode(dht.ModeClient))
 	if err != nil {
 		return fmt.Errorf("create temp dht: %w", err)
 	}

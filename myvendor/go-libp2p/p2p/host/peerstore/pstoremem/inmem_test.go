@@ -1,10 +1,14 @@
 package pstoremem
 
 import (
+	"strconv"
 	"testing"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	pstore "github.com/libp2p/go-libp2p/core/peerstore"
 	pt "github.com/libp2p/go-libp2p/p2p/host/peerstore/test"
+	"github.com/multiformats/go-multiaddr"
 
 	mockClock "github.com/benbjohnson/clock"
 	"github.com/stretchr/testify/require"
@@ -19,7 +23,7 @@ func TestInvalidOption(t *testing.T) {
 func TestFuzzInMemoryPeerstore(t *testing.T) {
 	// Just create and close a bunch of peerstores. If this leaks, we'll
 	// catch it in the leak check below.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		ps, err := NewPeerstore()
 		require.NoError(t, err)
 		ps.Close()
@@ -44,8 +48,11 @@ func TestPeerstoreProtoStoreLimits(t *testing.T) {
 
 func TestInMemoryAddrBook(t *testing.T) {
 	clk := mockClock.NewMock()
+	// Shared addr-book suite inserts batches larger than the default
+	// per-peer cap; disable the cap so the suite exercises general
+	// behavior, not the cap path.
 	pt.TestAddrBook(t, func() (pstore.AddrBook, func()) {
-		ps, err := NewPeerstore(WithClock(clk))
+		ps, err := NewPeerstore(WithClock(clk), WithMaxAddressesPerPeer(0))
 		require.NoError(t, err)
 		return ps, func() { ps.Close() }
 	}, clk)
@@ -78,7 +85,33 @@ func BenchmarkInMemoryKeyBook(b *testing.B) {
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(
 		m,
-		goleak.IgnoreTopFunction("github.com/ipfs/go-log/v2/writer.(*MirrorWriter).logRoutine"),
+		goleak.IgnoreTopFunction("github.com/libp2p/go-libp2p/gologshim/writer.(*MirrorWriter).logRoutine"),
 		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
 	)
+}
+
+func BenchmarkGC(b *testing.B) {
+	clock := mockClock.NewMock()
+	ps, err := NewPeerstore(WithClock(clock))
+	require.NoError(b, err)
+	defer ps.Close()
+
+	peerCount := 100_000
+	addrsPerPeer := 32
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		for i := range peerCount {
+			id := peer.ID(strconv.Itoa(i))
+			addrs := make([]multiaddr.Multiaddr, addrsPerPeer)
+			for j := range addrsPerPeer {
+				addrs[j] = multiaddr.StringCast("/ip4/1.2.3.4/tcp/" + strconv.Itoa(j))
+			}
+			ps.AddAddrs(id, addrs, 24*time.Hour)
+		}
+		clock.Add(25 * time.Hour)
+		b.StartTimer()
+		ps.gc()
+	}
 }

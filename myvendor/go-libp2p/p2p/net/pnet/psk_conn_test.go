@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func setupPSKConns(ctx context.Context, t *testing.T) (net.Conn, net.Conn) {
+func setupPSKConns(_ context.Context, t *testing.T) (net.Conn, net.Conn) {
 	testPSK := make([]byte, 32) // null bytes are as good test key as any other key
 	conn1, conn2 := net.Pipe()
 
@@ -24,8 +24,7 @@ func setupPSKConns(ctx context.Context, t *testing.T) (net.Conn, net.Conn) {
 }
 
 func TestPSKSimpelMessges(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
+	ctx := t.Context()
 
 	psk1, psk2 := setupPSKConns(ctx, t)
 	msg1 := []byte("hello world")
@@ -56,8 +55,7 @@ func TestPSKSimpelMessges(t *testing.T) {
 }
 
 func TestPSKFragmentation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
+	ctx := t.Context()
 
 	psk1, psk2 := setupPSKConns(ctx, t)
 
@@ -74,7 +72,7 @@ func TestPSKFragmentation(t *testing.T) {
 		wch <- err
 	}()
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if _, err := psk2.Read(out); err != nil {
 			t.Fatal(err)
 		}

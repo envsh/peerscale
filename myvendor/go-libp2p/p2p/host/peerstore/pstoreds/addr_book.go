@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/hashicorp/golang-lru/arc/v2"
 	ds "github.com/ipfs/go-datastore"
 	"github.com/ipfs/go-datastore/query"
-	logging "github.com/ipfs/go-log/v2"
+	logging "github.com/libp2p/go-libp2p/gologshim"
 	b32 "github.com/multiformats/go-base32"
 	ma "github.com/multiformats/go-multiaddr"
 	"google.golang.org/protobuf/proto"
@@ -282,7 +283,21 @@ func (ab *dsAddrBook) AddAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duratio
 
 // ConsumePeerRecord adds addresses from a signed peer.PeerRecord (contained in
 // a record.Envelope), which will expire after the given TTL.
-// See https://godoc.org/github.com/libp2p/go-libp2p/core/peerstore#CertifiedAddrBook for more details.
+// See https://godoc.org/github.com/libp2p/go-libp2p/core/peerstore#CertifiedAddrBook
+// for more details.
+//
+// The signed peer record's Seq is treated as monotonic per peer: a record
+// with a Seq lower than the last accepted one is rejected. Equal Seq is
+// accepted as a TTL refresh.
+//
+// When a newer signed record is accepted, addrs that were present in the
+// previously stored signed record but absent in the new one are evicted, so
+// the peerstore reflects the peer's current self-advertised set instead of
+// the union of every record we have ever seen. Unsigned addrs (added via
+// AddAddr / SetAddr from sources like DHT gossip, or from an identify
+// exchange where the peer did not send a signed record) are not touched, and
+// addrs held by a live connection (TTL >= ConnectedAddrTTL) are also kept so
+// active sessions are not dropped.
 func (ab *dsAddrBook) ConsumePeerRecord(recordEnvelope *record.Envelope, ttl time.Duration) (bool, error) {
 	r, err := recordEnvelope.Record()
 	if err != nil {
@@ -303,6 +318,15 @@ func (ab *dsAddrBook) ConsumePeerRecord(recordEnvelope *record.Envelope, ttl tim
 	}
 
 	addrs := cleanAddrs(rec.Addrs, rec.PeerID)
+
+	// Diff against the previously stored signed record so we can drop addrs
+	// the peer no longer advertises before adding the new ones.
+	if superseded := ab.supersededSignedAddrs(rec.PeerID, addrs); len(superseded) > 0 {
+		if err := ab.deleteAddrs(rec.PeerID, superseded); err != nil {
+			return false, err
+		}
+	}
+
 	err = ab.setAddrs(rec.PeerID, addrs, ttl, ttlExtend, true)
 	if err != nil {
 		return false, err
@@ -315,12 +339,69 @@ func (ab *dsAddrBook) ConsumePeerRecord(recordEnvelope *record.Envelope, ttl tim
 	return true, nil
 }
 
+// supersededSignedAddrs returns addrs that were present in the previously
+// stored signed peer record for p but are absent in newAddrs. Addrs held by
+// a live connection (TTL >= ConnectedAddrTTL) are excluded so an active
+// session is not torn down when the peer rotates its advertised set.
+func (ab *dsAddrBook) supersededSignedAddrs(p peer.ID, newAddrs []ma.Multiaddr) []ma.Multiaddr {
+	prevEnv := ab.GetPeerRecord(p)
+	if prevEnv == nil {
+		return nil
+	}
+	prev, err := prevEnv.Record()
+	if err != nil {
+		return nil
+	}
+	prevRec, ok := prev.(*peer.PeerRecord)
+	if !ok {
+		return nil
+	}
+
+	newSet := make(map[string]struct{}, len(newAddrs))
+	for _, a := range newAddrs {
+		newSet[string(a.Bytes())] = struct{}{}
+	}
+
+	pr, err := ab.loadRecord(p, true, false)
+	if err != nil {
+		return nil
+	}
+	pr.RLock()
+	connected := make(map[string]struct{})
+	for _, a := range pr.Addrs {
+		if ttlIsConnected(time.Duration(a.Ttl)) {
+			connected[string(a.Addr)] = struct{}{}
+		}
+	}
+	pr.RUnlock()
+
+	superseded := make([]ma.Multiaddr, 0, len(prevRec.Addrs))
+	for _, a := range prevRec.Addrs {
+		key := string(a.Bytes())
+		if _, still := newSet[key]; still {
+			continue
+		}
+		if _, isConn := connected[key]; isConn {
+			continue
+		}
+		superseded = append(superseded, a)
+	}
+	return superseded
+}
+
+// ttlIsConnected reports whether the TTL marks the address as held by a
+// live connection. Such entries bypass the per-peer cap and survive
+// eviction.
+func ttlIsConnected(ttl time.Duration) bool {
+	return ttl >= pstore.ConnectedAddrTTL
+}
+
 func (ab *dsAddrBook) latestPeerRecordSeq(p peer.ID) uint64 {
 	pr, err := ab.loadRecord(p, true, false)
 	if err != nil {
 		// We ignore the error because we don't want to fail storing a new record in this
 		// case.
-		log.Errorw("unable to load record", "peer", p, "error", err)
+		log.Error("unable to load record", "peer", p, "err", err)
 		return 0
 	}
 	pr.RLock()
@@ -362,7 +443,7 @@ func (ab *dsAddrBook) storeSignedPeerRecord(p peer.ID, envelope *record.Envelope
 func (ab *dsAddrBook) GetPeerRecord(p peer.ID) *record.Envelope {
 	pr, err := ab.loadRecord(p, true, false)
 	if err != nil {
-		log.Errorf("unable to load record for peer %s: %v", p, err)
+		log.Error("unable to load record for peer", "peer", p, "err", err)
 		return nil
 	}
 	pr.RLock()
@@ -372,7 +453,7 @@ func (ab *dsAddrBook) GetPeerRecord(p peer.ID) *record.Envelope {
 	}
 	state, _, err := record.ConsumeEnvelope(pr.CertifiedRecord.Raw, peer.PeerRecordEnvelopeDomain)
 	if err != nil {
-		log.Errorf("error unmarshaling stored signed peer record for peer %s: %v", p, err)
+		log.Error("error unmarshaling stored signed peer record for peer", "peer", p, "err", err)
 		return nil
 	}
 	return state
@@ -398,7 +479,7 @@ func (ab *dsAddrBook) SetAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duratio
 func (ab *dsAddrBook) UpdateAddrs(p peer.ID, oldTTL time.Duration, newTTL time.Duration) {
 	pr, err := ab.loadRecord(p, true, false)
 	if err != nil {
-		log.Errorf("failed to update ttls for peer %s: %s\n", p, err)
+		log.Error("failed to update ttls for peer", "peer", p, "err", err)
 		return
 	}
 
@@ -423,7 +504,7 @@ func (ab *dsAddrBook) UpdateAddrs(p peer.ID, oldTTL time.Duration, newTTL time.D
 func (ab *dsAddrBook) Addrs(p peer.ID) []ma.Multiaddr {
 	pr, err := ab.loadRecord(p, true, true)
 	if err != nil {
-		log.Warnf("failed to load peerstore entry for peer %s while querying addrs, err: %v", p, err)
+		log.Warn("failed to load peerstore entry for peer while querying addrs", "peer", p, "err", err)
 		return nil
 	}
 
@@ -435,7 +516,7 @@ func (ab *dsAddrBook) Addrs(p peer.ID) []ma.Multiaddr {
 		var err error
 		addrs[i], err = ma.NewMultiaddrBytes(a.Addr)
 		if err != nil {
-			log.Warn("failed to parse peerstore entry for peer %v while querying addrs, err: %v", p, err)
+			log.Warn("failed to parse peerstore entry for peer while querying addrs", "peer", p, "err", err)
 			return nil
 		}
 	}
@@ -448,7 +529,7 @@ func (ab *dsAddrBook) PeersWithAddrs() peer.IDSlice {
 		return ds.RawKey(result.Key).Name()
 	})
 	if err != nil {
-		log.Errorf("error while retrieving peers with addresses: %v", err)
+		log.Error("error while retrieving peers with addresses", "err", err)
 	}
 	return ids
 }
@@ -466,11 +547,11 @@ func (ab *dsAddrBook) ClearAddrs(p peer.ID) {
 
 	key := addrBookBase.ChildString(b32.RawStdEncoding.EncodeToString([]byte(p)))
 	if err := ab.ds.Delete(context.TODO(), key); err != nil {
-		log.Errorf("failed to clear addresses for peer %s: %v", p, err)
+		log.Error("failed to clear addresses for peer", "peer", p, "err", err)
 	}
 }
 
-func (ab *dsAddrBook) setAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duration, mode ttlWriteMode, signed bool) (err error) {
+func (ab *dsAddrBook) setAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duration, mode ttlWriteMode, _ bool) (err error) {
 	if len(addrs) == 0 {
 		return nil
 	}
@@ -517,6 +598,43 @@ func (ab *dsAddrBook) setAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duratio
 		return existingEntry
 	}
 
+	// Per-peer cap on unconnected addrs. Entries held by a live connection
+	// (TTL >= ConnectedAddrTTL) bypass the cap and survive eviction. The
+	// cap bounds peerstore pollution from sources like DHT gossip while
+	// leaving addresses tied to active sessions intact.
+	maxCap := ab.opts.MaxAddrsPerPeer
+	incomingIsUnconnected := !ttlIsConnected(ttl)
+	unconnectedCount := 0
+	if maxCap > 0 && incomingIsUnconnected {
+		for _, a := range pr.Addrs {
+			if !ttlIsConnected(time.Duration(a.Ttl)) {
+				unconnectedCount++
+			}
+		}
+	}
+	// evictNearestUnconnected drops the unconnected entry from pr.Addrs with
+	// the soonest expiry. Returns false when every remaining entry is held by
+	// a live connection, in which case the caller must drop the new addr.
+	evictNearestUnconnected := func() bool {
+		victim := -1
+		var soonest int64
+		for i, a := range pr.Addrs {
+			if ttlIsConnected(time.Duration(a.Ttl)) {
+				continue
+			}
+			if victim == -1 || a.Expiry < soonest {
+				victim = i
+				soonest = a.Expiry
+			}
+		}
+		if victim == -1 {
+			return false
+		}
+		delete(addrsMap, string(pr.Addrs[victim].Addr))
+		pr.Addrs = slices.Delete(pr.Addrs, victim, victim+1)
+		return true
+	}
+
 	var entries []*pb.AddrBookRecord_AddrEntry
 	for _, incoming := range addrs {
 		existingEntry := updateExisting(incoming)
@@ -526,6 +644,13 @@ func (ab *dsAddrBook) setAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duratio
 			// 		entries = append(entries, existingEntry)
 			// 	}
 			// } else {
+			if maxCap > 0 && incomingIsUnconnected && unconnectedCount >= maxCap {
+				if !evictNearestUnconnected() {
+					// Every existing addr is protected; drop the new one.
+					continue
+				}
+				unconnectedCount--
+			}
 			// new addr, add & broadcast
 			entry := &pb.AddrBookRecord_AddrEntry{
 				Addr:   incoming.Bytes(),
@@ -533,6 +658,9 @@ func (ab *dsAddrBook) setAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duratio
 				Expiry: newExp,
 			}
 			entries = append(entries, entry)
+			if incomingIsUnconnected {
+				unconnectedCount++
+			}
 
 			// note: there's a minor chance that writing the record will fail, in which case we would've broadcast
 			// the addresses without persisting them. This is very unlikely and not much of an issue.
@@ -604,11 +732,11 @@ func cleanAddrs(addrs []ma.Multiaddr, pid peer.ID) []ma.Multiaddr {
 		// Remove suffix of /p2p/peer-id from address
 		addr, addrPid := peer.SplitAddr(addr)
 		if addr == nil {
-			log.Warnw("Was passed a nil multiaddr", "peer", pid)
+			log.Warn("Was passed a nil multiaddr", "peer", pid)
 			continue
 		}
 		if addrPid != "" && addrPid != pid {
-			log.Warnf("Was passed p2p address with a different peerId. found: %s, expected: %s", addrPid, pid)
+			log.Warn("Was passed p2p address with a different peerId", "found", addrPid, "expected", pid)
 			continue
 		}
 		clean = append(clean, addr)

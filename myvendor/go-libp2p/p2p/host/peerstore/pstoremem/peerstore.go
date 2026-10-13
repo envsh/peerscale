@@ -20,34 +20,32 @@ type pstoremem struct {
 
 var _ peerstore.Peerstore = &pstoremem{}
 
-type Option interface{}
+type Option any
 
 // NewPeerstore creates an in-memory thread-safe collection of peers.
 // It's the caller's responsibility to call RemovePeer to ensure
 // that memory consumption of the peerstore doesn't grow unboundedly.
 func NewPeerstore(opts ...Option) (ps *pstoremem, err error) {
-	ab := NewAddrBook()
-	defer func() {
-		if err != nil {
-			ab.Close()
-		}
-	}()
-
 	var protoBookOpts []ProtoBookOption
+	var addrBookOpts []AddrBookOption
 	for _, opt := range opts {
 		switch o := opt.(type) {
 		case ProtoBookOption:
 			protoBookOpts = append(protoBookOpts, o)
 		case AddrBookOption:
-			o(ab)
+			addrBookOpts = append(addrBookOpts, o)
 		default:
 			return nil, fmt.Errorf("unexpected peer store option: %v", o)
 		}
 	}
+	ab := NewAddrBook(addrBookOpts...)
+
 	pb, err := NewProtoBook(protoBookOpts...)
 	if err != nil {
+		ab.Close()
 		return nil, err
 	}
+
 	return &pstoremem{
 		Metrics:            pstore.NewMetrics(),
 		memoryKeyBook:      NewKeyBook(),
@@ -59,7 +57,7 @@ func NewPeerstore(opts ...Option) (ps *pstoremem, err error) {
 
 func (ps *pstoremem) Close() (err error) {
 	var errs []error
-	weakClose := func(name string, c interface{}) {
+	weakClose := func(name string, c any) {
 		if cl, ok := c.(io.Closer); ok {
 			if err = cl.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("%s error: %s", name, err))

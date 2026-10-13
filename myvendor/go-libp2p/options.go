@@ -30,7 +30,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	ma "github.com/multiformats/go-multiaddr"
-	madns "github.com/multiformats/go-multiaddr-dns"
 	"go.uber.org/fx"
 )
 
@@ -70,7 +69,7 @@ func ListenAddrs(addrs ...ma.Multiaddr) Option {
 // * Host
 // * Network
 // * Peerstore
-func Security(name string, constructor interface{}) Option {
+func Security(name string, constructor any) Option {
 	return func(cfg *Config) error {
 		if cfg.Insecure {
 			return fmt.Errorf("cannot use security transports with an insecure libp2p configuration")
@@ -114,7 +113,7 @@ func Muxer(name string, muxer network.Multiplexer) Option {
 // * Public Key
 // * Address filter (filter.Filter)
 // * Peerstore
-func Transport(constructor interface{}, opts ...interface{}) Option {
+func Transport(constructor any, opts ...any) Option {
 	return func(cfg *Config) error {
 		// generate a random identifier, so that fx can associate the constructor with its options
 		b := make([]byte, 8)
@@ -414,6 +413,21 @@ func Ping(enable bool) Option {
 	}
 }
 
+// NonPublicAddrPublishing controls whether the host advertises addresses that
+// are not in a globally-routable range (RFC 1918 private, RFC 6598 CGNAT,
+// link-local, loopback, ULA, IPv6 documentation/multicast/reserved space)
+// through the peerstore and signed peer records. Multiaddrs without an IP
+// component such as /p2p-circuit are not affected.
+//
+// Defaults to true for backward compatibility. Set to false on public-facing
+// nodes to avoid leaking internal topology through identify and DHT records.
+func NonPublicAddrPublishing(enable bool) Option {
+	return func(cfg *Config) error {
+		cfg.DisableNonPublicAddrPublishing = !enable
+		return nil
+	}
+}
+
 // Routing will configure libp2p to use routing.
 func Routing(rt config.RoutingC) Option {
 	return func(cfg *Config) error {
@@ -467,7 +481,7 @@ func UserAgent(userAgent string) Option {
 }
 
 // MultiaddrResolver sets the libp2p dns resolver
-func MultiaddrResolver(rslv *madns.Resolver) Option {
+func MultiaddrResolver(rslv network.MultiaddrDNSResolver) Option {
 	return func(cfg *Config) error {
 		cfg.MultiaddrResolver = rslv
 		return nil
@@ -604,6 +618,27 @@ func IPv6BlackHoleSuccessCounter(f *swarm.BlackHoleSuccessCounter) Option {
 	return func(cfg *Config) error {
 		cfg.IPv6BlackHoleSuccessCounter = f
 		cfg.CustomIPv6BlackHoleSuccessCounter = true
+		return nil
+	}
+}
+
+// WithFxOption adds a user provided fx.Option to the libp2p constructor.
+// Experimental: This option is subject to change or removal.
+func WithFxOption(opts ...fx.Option) Option {
+	return func(cfg *Config) error {
+		cfg.UserFxOptions = append(cfg.UserFxOptions, opts...)
+		return nil
+	}
+}
+
+// ShareTCPListener shares the same listen address between TCP and Websocket
+// transports. This lets both transports use the same TCP port.
+//
+// Currently this behavior is Opt-in. In a future release this will be the
+// default, and this option will be removed.
+func ShareTCPListener() Option {
+	return func(cfg *Config) error {
+		cfg.ShareTCPListener = true
 		return nil
 	}
 }

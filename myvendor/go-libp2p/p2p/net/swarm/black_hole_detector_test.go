@@ -11,9 +11,8 @@ import (
 func TestBlackHoleSuccessCounterReset(t *testing.T) {
 	n := 10
 	bhf := &BlackHoleSuccessCounter{N: n, MinSuccesses: 2, Name: "test"}
-	var i = 0
 	// calls up to n should be probing
-	for i = 1; i <= n; i++ {
+	for i := 1; i <= n; i++ {
 		if bhf.HandleRequest() != blackHoleStateProbing {
 			t.Fatalf("expected calls up to n to be probes")
 		}
@@ -24,7 +23,7 @@ func TestBlackHoleSuccessCounterReset(t *testing.T) {
 	}
 
 	// after threshold calls every nth call should be a probe
-	for i = n + 1; i < 42; i++ {
+	for i := n + 1; i < 42; i++ {
 		result := bhf.HandleRequest()
 		if (i%n == 0 && result != blackHoleStateProbing) || (i%n != 0 && result != blackHoleStateBlocked) {
 			t.Fatalf("expected every nth dial to be a probe")
@@ -36,7 +35,7 @@ func TestBlackHoleSuccessCounterReset(t *testing.T) {
 
 	bhf.RecordResult(true)
 	// check if calls up to n are probes again
-	for i = 0; i < n; i++ {
+	for range n {
 		if bhf.HandleRequest() != blackHoleStateProbing {
 			t.Fatalf("expected black hole detector state to reset after success")
 		}
@@ -59,7 +58,7 @@ func TestBlackHoleSuccessCounterSuccessFraction(t *testing.T) {
 	n := 10
 	tests := []struct {
 		minSuccesses, successes int
-		result                  blackHoleState
+		result                  BlackHoleState
 	}{
 		{minSuccesses: 5, successes: 5, result: blackHoleStateAllowed},
 		{minSuccesses: 3, successes: 3, result: blackHoleStateAllowed},
@@ -96,10 +95,10 @@ func TestBlackHoleDetectorInApplicableAddress(t *testing.T) {
 		ma.StringCast("/ip6/::1/udp/1234/quic-v1"),
 		ma.StringCast("/ip4/192.168.1.5/udp/1234/quic-v1"),
 	}
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		filteredAddrs, _ := bhd.FilterAddrs(addrs)
 		require.ElementsMatch(t, addrs, filteredAddrs)
-		for j := 0; j < len(addrs); j++ {
+		for j := range addrs {
 			bhd.RecordResult(addrs[j], false)
 		}
 	}
@@ -110,7 +109,7 @@ func TestBlackHoleDetectorUDPDisabled(t *testing.T) {
 	bhd := &blackHoleDetector{ipv6: ipv6F}
 	publicAddr := ma.StringCast("/ip4/1.2.3.4/udp/1234/quic-v1")
 	privAddr := ma.StringCast("/ip4/192.168.1.5/udp/1234/quic-v1")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		bhd.RecordResult(publicAddr, false)
 	}
 	wantAddrs := []ma.Multiaddr{publicAddr, privAddr}
@@ -126,7 +125,7 @@ func TestBlackHoleDetectorIPv6Disabled(t *testing.T) {
 	bhd := &blackHoleDetector{udp: udpF}
 	publicAddr := ma.StringCast("/ip6/2001::1/tcp/1234")
 	privAddr := ma.StringCast("/ip6/::1/tcp/1234")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		bhd.RecordResult(publicAddr, false)
 	}
 
@@ -145,7 +144,7 @@ func TestBlackHoleDetectorProbes(t *testing.T) {
 	}
 	udp6Addr := ma.StringCast("/ip6/2001::1/udp/1234/quic-v1")
 	addrs := []ma.Multiaddr{udp6Addr}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		bhd.RecordResult(udp6Addr, false)
 	}
 	for i := 1; i < 100; i++ {
@@ -178,10 +177,10 @@ func TestBlackHoleDetectorAddrFiltering(t *testing.T) {
 			udp:  &BlackHoleSuccessCounter{N: 100, MinSuccesses: 10, Name: "udp"},
 			ipv6: &BlackHoleSuccessCounter{N: 100, MinSuccesses: 10, Name: "ipv6"},
 		}
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			bhd.RecordResult(udp4Pub, !udpBlocked)
 		}
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			bhd.RecordResult(tcp6Pub, !ipv6Blocked)
 		}
 		return bhd
@@ -218,7 +217,7 @@ func TestBlackHoleDetectorReadOnlyMode(t *testing.T) {
 	bhd := &blackHoleDetector{udp: udpF, ipv6: ipv6F, readOnly: true}
 	publicAddr := ma.StringCast("/ip4/1.2.3.4/udp/1234/quic-v1")
 	privAddr := ma.StringCast("/ip6/::1/tcp/1234")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		bhd.RecordResult(publicAddr, true)
 	}
 	allAddr := []ma.Multiaddr{privAddr, publicAddr}
@@ -232,7 +231,7 @@ func TestBlackHoleDetectorReadOnlyMode(t *testing.T) {
 
 	// a non readonly shared state black hole detector
 	nbhd := &blackHoleDetector{udp: bhd.udp, ipv6: bhd.ipv6, readOnly: false}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		nbhd.RecordResult(publicAddr, true)
 	}
 	// no addresses filtered because state is allowed

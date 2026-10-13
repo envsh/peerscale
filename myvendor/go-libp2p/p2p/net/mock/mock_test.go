@@ -354,8 +354,8 @@ func TestAdding(t *testing.T) {
 	mn := New()
 	defer mn.Close()
 
-	var peers []peer.ID
-	for i := 0; i < 3; i++ {
+	peers := make([]peer.ID, 0, 3)
+	for range 3 {
 		priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -488,12 +488,12 @@ func TestLimitedStreams(t *testing.T) {
 	messageSize := 500
 	handler := func(s network.Stream) {
 		b := make([]byte, messageSize)
-		for i := 0; i < messages; i++ {
+		for range messages {
 			if _, err := io.ReadFull(s, b); err != nil {
-				log.Fatal(err)
+				t.Fatal(err)
 			}
 			if !bytes.Equal(b[:4], []byte("ping")) {
-				log.Fatal("bytes mismatch")
+				t.Fatal("bytes mismatch")
 			}
 			wg.Done()
 		}
@@ -524,7 +524,7 @@ func TestLimitedStreams(t *testing.T) {
 	filler := make([]byte, messageSize-4)
 	data := append([]byte("ping"), filler...)
 	before := time.Now()
-	for i := 0; i < messages; i++ {
+	for range messages {
 		wg.Add(1)
 		if _, err := s.Write(data); err != nil {
 			panic(err)
