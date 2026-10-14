@@ -671,6 +671,9 @@ func loadPeerstore(h host.Host, path string) error {
 			if err != nil {
 				continue
 			}
+			if isVirtIP4Addr(ma) {
+				continue
+			}
 			mas = append(mas, ma)
 		}
 		if len(mas) > 0 {

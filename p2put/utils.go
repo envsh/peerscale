@@ -87,6 +87,13 @@ func extractIPFromAddr(addr multiaddr.Multiaddr) net.IP {
 	return nil
 }
 
+// isVirtIP4Addr 判定 /ip4/10.0.0.0/24 地址(softun/fbvirtun 的 VlanPfx=10.0.0.),
+// 在 myAddrsFactory 中过滤掉自身虚拟网卡地址。
+func isVirtIP4Addr(addr multiaddr.Multiaddr) bool {
+	ip4 := extractIPFromAddr(addr).To4()
+	return ip4 != nil && ip4[0] == 10 && ip4[1] == 0 && ip4[2] == 0
+}
+
 func extractRelayPeerID(addr multiaddr.Multiaddr) (peer.ID, error) {
 	relayPart, _ := multiaddr.SplitFunc(addr, func(c multiaddr.Component) bool {
 		return c.Protocol().Code == multiaddr.P_CIRCUIT
@@ -180,7 +187,7 @@ func myAddrsFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 			}
 			_, _ = ip4, tcp
 			// if ip4 && tcp && !islo {
-			if !islo {
+			if !islo && !isVirtIP4Addr(a) {
 				out = append(out, a)
 			}
 		}
@@ -206,7 +213,7 @@ func myAddrsFactory(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 			relayMA, _ = multiaddr.NewMultiaddr(
 				fmt.Sprintf("/ip6/%s/tcp/%d", tcpAddr.IP, tcpAddr.Port))
 		}
-		if relayMA != nil {
+		if relayMA != nil && !isVirtIP4Addr(relayMA) {
 			out = append(out, relayMA)
 			relayAddrs = append(relayAddrs, relayMA.String())
 		}
