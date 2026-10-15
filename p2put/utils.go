@@ -87,11 +87,22 @@ func extractIPFromAddr(addr multiaddr.Multiaddr) net.IP {
 	return nil
 }
 
-// isVirtIP4Addr 判定 /ip4/10.0.0.0/24 地址(softun/fbvirtun 的 VlanPfx=10.0.0.),
-// 在 myAddrsFactory 中过滤掉自身虚拟网卡地址。
+// isVirtIP4Addr 判定地址是否落在虚拟网卡网段内(softun/fbvirtun 的 VlanPfx 等),
+// 在 myAddrsFactory(直连/TURN relay)与 loadPeerstore 中过滤掉虚拟网卡地址。
 func isVirtIP4Addr(addr multiaddr.Multiaddr) bool {
-	ip4 := extractIPFromAddr(addr).To4()
-	return ip4 != nil && ip4[0] == 10 && ip4[1] == 0 && ip4[2] == 0
+	ip := extractIPFromAddr(addr)
+	if ip == nil {
+		return false
+	}
+	for _, n := range []net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(24, 32)}, // 10.0.0.0/24
+		{IP: net.IPv4(10, 0, 3, 0), Mask: net.CIDRMask(24, 32)}, // 10.0.3.0/24
+	} {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractRelayPeerID(addr multiaddr.Multiaddr) (peer.ID, error) {

@@ -180,7 +180,7 @@ func topicListener(sub *pubsub.Subscription, topic string) {
 		msg.ID = ""
 		msg.Message.Signature = nil
 		msg.Message.Key = nil
-		evt := Event{EventID: time.Now().UnixNano(), Type: "pubsub", Topic: topic, Value: pubsubEvent{
+		evt := Event{EventID: time.Now().UnixNano(), Type: "pubsub", Topic: topic, Value: PubsubEvent{
 			From:         string(msg.Message.From),
 			Data:         string(msg.Message.Data),
 			Seqno:        base64.StdEncoding.EncodeToString(msg.Message.Seqno),
@@ -439,7 +439,7 @@ func handlePubSubFwdStream(s network.Stream) {
 	msg.ID = ""
 	msg.Message.Signature = nil
 	msg.Message.Key = nil
-	rawChan <- Event{Type: "pubsub", Topic: *msg.Message.Topic, Value: pubsubEvent{
+	rawChan <- Event{Type: "pubsub", Topic: *msg.Message.Topic, Value: PubsubEvent{
 		From:         string(msg.Message.From),
 		Data:         string(msg.Message.Data),
 		Seqno:        base64.StdEncoding.EncodeToString(msg.Message.Seqno),

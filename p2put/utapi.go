@@ -36,7 +36,8 @@ type Event struct {
 	Value   any
 }
 
-type pubsubEvent struct {
+// PubsubEvent 是 Event.Value 的动态类型(pubsub 事件载荷);导出以便外部直接类型断言,免反射。
+type PubsubEvent struct {
 	From         string `json:"from"`
 	Data         string `json:"data"`
 	Seqno        string `json:"seqno"`

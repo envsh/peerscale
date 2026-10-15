@@ -96,7 +96,7 @@ func handlePubSubFwdStream(s network.Stream) {
 		time.Unix(0, int64(binary.BigEndian.Uint64(msg.Seqno))).Format("15:04:05.000000"),
 		msg.Topic, pid.ShortString())
 
-	rawChan <- Event{Type: "pubsub", Topic: msg.Topic, Value: pubsubEvent{
+	rawChan <- Event{Type: "pubsub", Topic: msg.Topic, Value: PubsubEvent{
 		From:         string(msg.From),
 		Data:         string(msg.Data),
 		Seqno:        base64.StdEncoding.EncodeToString(msg.Seqno),
@@ -163,7 +163,7 @@ func PublishTopic(topic string, data []byte) error {
 	rawChan <- Event{
 		Type:  "pubsub",
 		Topic: topic,
-		Value: pubsubEvent{
+		Value: PubsubEvent{
 			From:         string(pid),
 			Data:         string(data),
 			Seqno:        base64.StdEncoding.EncodeToString(seqno),

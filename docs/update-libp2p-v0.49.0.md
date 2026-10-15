@@ -105,3 +105,31 @@ go mod tidy
 4. `config/config.go` 额外删了 `"net"` import（webrtc 块移除后不再使用）。
 5. iptunnel `hub.go:230` 的 vet 告警为既有问题，与本升级无关。
 6. **裸 `go mod tidy` 修复**：新增两处占位包 `p2p/net/swarm/testing`（swarm）与 `x/simlibp2p`（simlibp2p），各一行 `package` 声明，使 kad-dht/pubsub 测试的 import 路径可解析；fork 构建/vet 不受影响，父目录 `go mod tidy` 纯通过（tidy 顺带把间接依赖 MVS 抬到 v0.49 图最优版本）。
+
+## 行为差异发现：接口地址枚举（tun IP 外泄根因）
+
+### 现象
+升级 v0.36.2 → v0.49.0 后，节点开始对外广播/被邻居拨到 tun 网卡地址（如 `/ip4/10.0.0.x`），
+出现 `* [/ip4/10.0.0.110/tcp/4001] ... i/o timeout` 之类的拨号噪音；v0.36 时代从未出现。
+
+### 根因：新版移除了“仅主网卡”启发式
+| 版本 | 接口地址来源 | unspecified listen addr 的解析结果 |
+|---|---|---|
+| v0.36.2 / v0.36.3 | `netroute.Route(IPv4zero)` 取默认路由网卡源 IP + loopback（`basic_host.go` `updateLocalIpAddr` → `filteredInterfaceAddrs`）；`AllAddrs()` 用 `ResolveUnspecifiedAddresses(listenAddrs, filteredIfaceAddrs)` | 仅主网卡 IP（+ loopback），**不含 tun** |
+| v0.48.0 / v0.49.0 | 删除 `netroute`/`filteredInterfaceAddrs`；`addrs_manager.go` 的 `interfaceAddrsCache` 用 `manet.InterfaceMultiaddrs()` 枚举**全部**网卡（仅去 IPv6 link-local）；`appendInterfaceAddrs` → `ResolveUnspecifiedAddresses(listenAddrs, a.interfaceAddrs.All())` | **全部网卡 IP，含 tun 的 10.0.0.x** |
+
+- v0.36.x 无 `addrs_manager.go`；v0.48/0.49 中 `netroute`/`filteredInterfaceAddrs` 已彻底删除（grep 为空）。
+- 该迁移发生在 v0.36.3 与 v0.48.0 之间（地址管理器重构，约 v0.37~v0.47）。
+- `AddrsFactory` 两版均在末端生效（v0.49：`addrs_manager.go` `applyAddrsFactory`），故可在此统一过滤。
+
+### 影响
+- 属升级引入的行为回归：v0.36 只广播默认路由网卡 IP，新版广播所有网卡 IP → tun 地址外泄。
+- 对端节点若同为新版，也会广播其 tun IP，因此拨号侧会出现对 tun 地址的超时错误（`dial ... i/o timeout`）。
+
+### 现有对策（方案 A，已实现）
+`p2put/utils.go` 的 `myAddrsFactory` + `isVirtIP4Addr` 过滤 `10.0.0.0/24`（直连段 `:190` 与 TURN relay 段 `:216` 均已应用），
+等效抹掉自身 tun 地址；面向“只想屏蔽虚拟网卡”的场景，保留其它网卡广播。
+
+### 已评估的备选方案（未采用）
+- **B. 具体 `libp2p.ListenAddrs`（默认网卡 IP）**：`manet.ResolveUnspecifiedAddress`（`go-multiaddr/net/resolve.go:11`）对非 unspecified 地址原样返回，故传具体 IP 只会绑定并广播该 IP；精确还原 v0.36，但静态、收窄绑定，网络切换需重监听。
+- **C. `AddrsFactory` 只保留默认网卡 IP**：用 `go-netroute`（`fork go.mod:29` 已有；父工程 indirect）的 `Route(IPv4zero)`/`Route(IPv6unspecified)`（与 v0.36 同源）在工厂里收敛为默认网卡地址，监听仍保持 `0.0.0.0`；最贴近 v0.36 语义且动态自适应，代价是引入 netroute 直接依赖与默认路由探测回退逻辑。
